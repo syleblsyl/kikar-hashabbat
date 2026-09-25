@@ -44,7 +44,14 @@ jobs:
 
       - name: Restore signing key
         if: env.HAS_KEYSTORE == 'true'
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.p12"
+        env:
+          KS: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          CLEAN=$(printf '%s' "$KS" | tr -d ' \r\n\t')
+          echo "::notice title=Secret check::length=${#CLEAN} starts=${CLEAN:0:4} ends=${CLEAN: -4}"
+          printf '%s' "$CLEAN" | base64 -d > "$RUNNER_TEMP/release.p12"
+          FP=$(keytool -list -v -keystore "$RUNNER_TEMP/release.p12" -storetype PKCS12 -storepass kikar-hashabbat | grep -m1 'SHA256:' | awk '{print $2}')
+          echo "::notice title=Signing key::fingerprint=$FP"
 
       - name: Build APK
         working-directory: android
