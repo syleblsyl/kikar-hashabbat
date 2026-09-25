@@ -17,3 +17,8 @@ export function parseAmount(v: string): number {
   const n = parseFloat(String(v).replace(/[,₪\s]/g, ''));
   return Number.isFinite(n) ? n : 0;
 }
+
+/** 1 -> "מוצר אחד", 5 -> "5 מוצרים" */
+export function products(n: number): string {
+  return n === 1 ? 'מוצר אחד' : `${n} מוצרים`;
+}

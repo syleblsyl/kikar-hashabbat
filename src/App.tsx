@@ -11,6 +11,11 @@ import { Home } from './screens/Home';
 import { Lock } from './screens/Lock';
 import { Settings } from './screens/Settings';
 import { Soon } from './screens/Soon';
+import { Catalog } from './screens/Catalog';
+import { ProductEdit } from './screens/ProductEdit';
+import { Agents } from './screens/Agents';
+import { AgentEdit } from './screens/AgentEdit';
+import { Categories } from './screens/Categories';
 
 type Gate = 'loading' | 'setup' | 'locked' | 'open' | 'change-pin' | 'error';
 
@@ -51,9 +56,11 @@ function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () =>
         <Routes>
           <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} />} />
           <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} onChangePin={onChangePin} onLock={onLock} />} />
-          <Route path="/catalog" element={<Soon withBar={false} title="מחירון" what="כאן יופיעו כל המוצרים עם תמונה, קטגוריה, מחיר קנייה ומחיר מכירה." />} />
-          <Route path="/agents" element={<Soon withBar={false} title="סוכנים" what="כאן תנהל את הסוכנים, המוצרים של כל סוכן, התשלומים והיתרה." />} />
-          <Route path="/agents/:id" element={<Soon title="סוכן" what="כרטיס סוכן עם תנועות, תשלומים ויתרה." />} />
+          <Route path="/catalog" element={<Catalog />} />
+          <Route path="/product/:id" element={<ProductEdit />} />
+          <Route path="/agents" element={<Agents />} />
+          <Route path="/agent/:id" element={<AgentEdit />} />
+          <Route path="/settings/categories" element={<Categories />} />
           <Route path="/reports" element={<Soon withBar={false} title="דוחות" what="דוח חודשי מפורט עם ייצוא לאקסל ול-PDF." />} />
           <Route path="/delivery" element={<Soon title="קבלת סחורה" what="בוחרים סוכן ורושמים כמה הגיע מכל מוצר בכפתורי + ו־−." />} />
           <Route path="/returns" element={<Soon title="החזרות" what="ביום ראשון רושמים כמה נשאר מכל מוצר, והזיכוי מהסוכן מחושב לבד." />} />

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { agentsForWeek, openReturnsCount, weekSummary, type AgentWeekRow, type WeekSummary } from '../db/repo';
 import { addDays, longDate, shortDate, fromIso, startOfWeek, today, weekLabel } from '../lib/dates';
-import { shekel } from '../lib/money';
+import { products, shekel } from '../lib/money';
 import type { UpdateInfo } from '../lib/updater';
 
 const TILES = [
@@ -12,7 +12,7 @@ const TILES = [
   { to: '/income', icon: 'cash', label: 'הכנסה יומית', bg: 'var(--green-soft)', fg: 'var(--green)' },
   { to: '/payment', icon: 'wallet', label: 'תשלום לסוכן', bg: 'var(--blue-soft)', fg: 'var(--blue)' },
   { to: '/expense', icon: 'receipt', label: 'הוצאה כללית', bg: 'var(--red-soft)', fg: 'var(--red)' },
-  { to: '/catalog', icon: 'tag', label: 'מוצר חדש', bg: 'var(--chip)', fg: 'var(--ink2)' },
+  { to: '/product/new', icon: 'tag', label: 'מוצר חדש', bg: 'var(--chip)', fg: 'var(--ink2)' },
 ];
 
 type Props = { update: UpdateInfo | null; weekStart: Date; setWeekStart: (d: Date) => void; onLock: () => void };
@@ -145,14 +145,14 @@ export function Home({ update, weekStart, setWeekStart, onLock }: Props) {
           {agents.length > 0 && <span>{`${delivered} מתוך ${agents.length} הגיעו`}</span>}
         </div>
         {agents.length === 0 ? (
-          <div className="empty">עוד לא הוגדרו סוכנים.<br />הוספת סוכנים ומוצרים תגיע בעדכון הבא.</div>
+          <div className="empty">עוד לא הוגדרו סוכנים.<br /><Link to="/agent/new" style={{ fontWeight: 800 }}>הוספת סוכן ראשון</Link></div>
         ) : (
           agents.map((a) => (
-            <Link key={a.id} to={a.delivered ? `/agents/${a.id}` : '/delivery'} className="row">
+            <Link key={a.id} to={a.delivered ? `/agent/${a.id}` : '/delivery'} className="row">
               <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{a.name.trim().split(' ').pop()?.charAt(0)}</span>
               <span className="grow">
                 <b>{a.name}</b>
-                <span>{a.delivered && a.deliveryDate ? `הגיע ${shortDate(fromIso(a.deliveryDate))} · ${a.lines} מוצרים` : 'עוד לא הגיע השבוע'}</span>
+                <span>{a.delivered && a.deliveryDate ? `הגיע ${shortDate(fromIso(a.deliveryDate))} · ${products(a.lines)}` : 'עוד לא הגיע השבוע'}</span>
               </span>
               {a.delivered ? <span className="amt">{shekel(a.cost)}</span> : <span className="pill gold">לרישום</span>}
             </Link>

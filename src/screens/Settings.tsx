@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
+import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { checkForUpdate, installUpdate, InstallPermissionNeeded, type UpdateInfo } from '../lib/updater';
 import { currentVersion, type AppVersion } from '../lib/version';
@@ -16,7 +17,6 @@ type State =
   | { kind: 'installing' };
 
 const SOON = [
-  { icon: 'tag', title: 'קטגוריות', sub: 'מאפים, קוגלים, סלטים…' },
   { icon: 'receipt', title: 'סוגי הוצאות', sub: 'שכירות, חשמל, ניקיון…' },
   { icon: 'cash', title: 'אמצעי תשלום', sub: 'מזומן, אשראי, אחר' },
   { icon: 'download', title: 'גיבוי ושחזור', sub: 'שמירת קובץ גיבוי ל-Drive או לוואטסאפ' },
@@ -125,6 +125,18 @@ export function Settings({ update, setUpdate, onChangePin, onLock }: Props) {
             <span>האפליקציה ננעלת לבד אחרי דקה ברקע</span>
           </span>
         </button>
+      </section>
+
+      <section className="card set-group">
+        <h2>מחירון</h2>
+        <Link to="/settings/categories" className="set-row" style={{ borderTop: 0 }}>
+          <span className="ic"><Icon name="tag" /></span>
+          <span className="grow">
+            קטגוריות
+            <span>מאפים, קוגלים, סלטים…</span>
+          </span>
+          <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
+        </Link>
       </section>
 
       <section className="card set-group">
