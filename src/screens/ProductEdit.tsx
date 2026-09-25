@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { SubBar } from '../components/SubBar';
+import { useBack } from '../components/useBack';
 import {
   addCategory,
   getProduct,
@@ -26,8 +27,8 @@ function priceText(n: number) {
 export function ProductEdit() {
   const { id } = useParams();
   const [params] = useSearchParams();
-  const nav = useNavigate();
-  const isNew = id === 'new';
+  const back = useBack();
+  const isNew = !id || id === 'new';
 
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState('');
@@ -111,7 +112,7 @@ export function ProductEdit() {
         returnable,
         agents: rows.map((r) => ({ agent_id: r.agent_id, cost_price: parseAmount(r.cost) })),
       });
-      nav(-1);
+      back();
     } catch (e) {
       console.error(e);
       setError('השמירה נכשלה, נסה שוב');
@@ -122,7 +123,7 @@ export function ProductEdit() {
   async function hide() {
     if (!window.confirm(`להסיר את "${name}" מהמחירון? הנתונים של שבועות קודמים נשמרים.`)) return;
     await hideProduct(Number(id));
-    nav(-1);
+    back();
   }
 
   const available = agents.filter((a) => !rows.some((r) => r.agent_id === a.id));

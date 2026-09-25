@@ -16,12 +16,6 @@ type State =
   | { kind: 'permission' }
   | { kind: 'installing' };
 
-const SOON = [
-  { icon: 'receipt', title: 'סוגי הוצאות', sub: 'שכירות, חשמל, ניקיון…' },
-  { icon: 'cash', title: 'אמצעי תשלום', sub: 'מזומן, אשראי, אחר' },
-  { icon: 'download', title: 'גיבוי ושחזור', sub: 'שמירת קובץ גיבוי ל-Drive או לוואטסאפ' },
-];
-
 export function Settings({ update, setUpdate, onChangePin, onLock }: Props) {
   const [ver, setVer] = useState<AppVersion | null>(null);
   const [st, setSt] = useState<State>({ kind: 'idle' });
@@ -128,8 +122,16 @@ export function Settings({ update, setUpdate, onChangePin, onLock }: Props) {
       </section>
 
       <section className="card set-group">
-        <h2>מחירון</h2>
-        <Link to="/settings/categories" className="set-row" style={{ borderTop: 0 }}>
+        <h2>נתונים ורשימות</h2>
+        <Link to="/settings/backup" className="set-row" style={{ borderTop: 0 }}>
+          <span className="ic"><Icon name="upload" /></span>
+          <span className="grow">
+            גיבוי ושחזור
+            <span>שמירת כל הנתונים לקובץ, ושחזור בטלפון חדש</span>
+          </span>
+          <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
+        </Link>
+        <Link to="/settings/categories" className="set-row">
           <span className="ic"><Icon name="tag" /></span>
           <span className="grow">
             קטגוריות
@@ -137,20 +139,22 @@ export function Settings({ update, setUpdate, onChangePin, onLock }: Props) {
           </span>
           <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
         </Link>
-      </section>
-
-      <section className="card set-group">
-        <h2>בעדכונים הבאים</h2>
-        {SOON.map((s, i) => (
-          <div key={s.title} className="set-row" style={i === 0 ? { borderTop: 0 } : undefined}>
-            <span className="ic"><Icon name={s.icon} /></span>
-            <span className="grow">
-              {s.title}
-              <span>{s.sub}</span>
-            </span>
-            <span className="soon">בקרוב</span>
-          </div>
-        ))}
+        <Link to="/settings/methods" className="set-row">
+          <span className="ic"><Icon name="cash" /></span>
+          <span className="grow">
+            אמצעי תשלום
+            <span>מזומן, אשראי, אחר, ומה שתוסיף</span>
+          </span>
+          <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
+        </Link>
+        <Link to="/settings/expense-types" className="set-row">
+          <span className="ic"><Icon name="receipt" /></span>
+          <span className="grow">
+            סוגי הוצאות
+            <span>שכירות, חשמל, ניקיון…</span>
+          </span>
+          <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
+        </Link>
       </section>
     </>
   );

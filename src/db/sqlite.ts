@@ -72,3 +72,11 @@ export async function run(sql: string, params: unknown[] = []): Promise<{ change
   await persist();
   return { changes: res.changes?.changes ?? 0, lastId: res.changes?.lastId ?? 0 };
 }
+
+/** Runs many statements in one transaction (fast, all-or-nothing). */
+export async function runSet(set: { statement: string; values?: unknown[] }[]) {
+  if (set.length === 0) return;
+  const conn = await getDb();
+  await conn.executeSet(set.map((s) => ({ statement: s.statement, values: (s.values ?? []) as never[] })), true);
+  await persist();
+}

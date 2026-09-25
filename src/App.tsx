@@ -16,6 +16,19 @@ import { ProductEdit } from './screens/ProductEdit';
 import { Agents } from './screens/Agents';
 import { AgentEdit } from './screens/AgentEdit';
 import { Categories } from './screens/Categories';
+import { AgentCard } from './screens/AgentCard';
+import { Delivery } from './screens/Delivery';
+import { Returns } from './screens/Returns';
+import { Income } from './screens/Income';
+import { Expenses } from './screens/Expenses';
+import { PaymentPick } from './screens/PaymentPick';
+import { ToastHost } from './components/Toast';
+import { Report } from './screens/Report';
+import { BackupScreen } from './screens/BackupScreen';
+import { ListManager } from './screens/ListManager';
+import { backupDue as isBackupDue } from './db/backup';
+import { addExpenseType, addMethod, listExpenseTypes, listMethods, renameExpenseType, renameMethod, setExpenseTypeActive, setMethodActive } from './db/ops';
+import { useBack } from './components/useBack';
 
 type Gate = 'loading' | 'setup' | 'locked' | 'open' | 'change-pin' | 'error';
 
@@ -24,7 +37,9 @@ const LOCK_AFTER_MS = 60_000;
 function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () => void }) {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(today()));
+  const [backupDue, setBackupDue] = useState(false);
   const nav = useNavigate();
+  const back = useBack();
   const loc = useLocation();
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -34,13 +49,14 @@ function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () =>
 
   useEffect(() => {
     scroller.current?.scrollTo(0, 0);
+    if (loc.pathname === '/') isBackupDue().then(setBackupDue).catch(() => undefined);
   }, [loc.pathname]);
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     const h = CapApp.addListener('backButton', () => {
       if (loc.pathname === '/') CapApp.minimizeApp();
-      else nav(-1);
+      else back();
     });
     return () => {
       h.then((x) => x.remove());
@@ -54,23 +70,55 @@ function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () =>
     <div className="app">
       <div className="screen" ref={scroller}>
         <Routes>
-          <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} />} />
+          <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} backupDue={backupDue} />} />
           <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} onChangePin={onChangePin} onLock={onLock} />} />
           <Route path="/catalog" element={<Catalog />} />
           <Route path="/product/:id" element={<ProductEdit />} />
           <Route path="/agents" element={<Agents />} />
-          <Route path="/agent/:id" element={<AgentEdit />} />
+          <Route path="/agent/new" element={<AgentEdit />} />
+          <Route path="/agent/:id" element={<AgentCard />} />
+          <Route path="/agent/:id/edit" element={<AgentEdit />} />
           <Route path="/settings/categories" element={<Categories />} />
-          <Route path="/reports" element={<Soon withBar={false} title="דוחות" what="דוח חודשי מפורט עם ייצוא לאקסל ול-PDF." />} />
-          <Route path="/delivery" element={<Soon title="קבלת סחורה" what="בוחרים סוכן ורושמים כמה הגיע מכל מוצר בכפתורי + ו־−." />} />
-          <Route path="/returns" element={<Soon title="החזרות" what="ביום ראשון רושמים כמה נשאר מכל מוצר, והזיכוי מהסוכן מחושב לבד." />} />
-          <Route path="/income" element={<Soon title="הכנסה יומית" what="רישום יומי של מזומן, אשראי ואחר." />} />
-          <Route path="/payment" element={<Soon title="תשלום לסוכן" what="רישום תאריך וסכום לכל תשלום, והיתרה מתעדכנת." />} />
-          <Route path="/expense" element={<Soon title="הוצאה כללית" what="שכירות, חשמל וכל הוצאה אחרת לפי סוגים שתגדיר." />} />
+          <Route path="/reports" element={<Report />} />
+          <Route path="/settings/backup" element={<BackupScreen />} />
+          <Route
+            path="/settings/methods"
+            element={
+              <ListManager
+                title="אמצעי תשלום"
+                hint="אמצעי התשלום שמופיעים במסך ההכנסה היומית. אמצעי שמוסתר לא יופיע יותר, אבל ההכנסות שנרשמו בו נשמרות."
+                placeholder="למשל: ביט"
+                load={() => listMethods(true)}
+                add={addMethod}
+                rename={renameMethod}
+                setActive={setMethodActive}
+              />
+            }
+          />
+          <Route
+            path="/settings/expense-types"
+            element={
+              <ListManager
+                title="סוגי הוצאות"
+                hint="הסוגים שמופיעים במסך ההוצאות ובדוח החודשי."
+                placeholder="למשל: שכירות"
+                load={() => listExpenseTypes(true)}
+                add={addExpenseType}
+                rename={renameExpenseType}
+                setActive={setExpenseTypeActive}
+              />
+            }
+          />
+          <Route path="/delivery" element={<Delivery />} />
+          <Route path="/returns" element={<Returns />} />
+          <Route path="/income" element={<Income />} />
+          <Route path="/payment" element={<PaymentPick />} />
+          <Route path="/expense" element={<Expenses />} />
           <Route path="*" element={<Soon title="לא נמצא" what="המסך הזה לא קיים." />} />
         </Routes>
       </div>
       {showNav && <BottomNav />}
+      <ToastHost />
     </div>
   );
 }

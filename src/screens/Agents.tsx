@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { listAgents, type Agent } from '../db/catalog';
+import { balances } from '../db/ops';
 import { DAY_NAMES } from '../lib/dates';
-import { products } from '../lib/money';
+import { products, shekel } from '../lib/money';
 
 export function initialOf(name: string) {
   return name.trim().split(/\s+/).pop()?.charAt(0) ?? '?';
@@ -11,9 +12,11 @@ export function initialOf(name: string) {
 
 export function Agents() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [bal, setBal] = useState<Map<number, number>>(new Map());
 
   useEffect(() => {
     listAgents().then(setAgents);
+    balances().then(setBal);
   }, []);
 
   return (
@@ -48,7 +51,11 @@ export function Agents() {
                   {a.delivery_day != null ? ` · מגיע ביום ${DAY_NAMES[a.delivery_day]}` : ''}
                 </span>
               </span>
-              <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
+              {Math.abs(bal.get(a.id) ?? 0) > 0.004 ? (
+                <span className="amt" style={{ color: (bal.get(a.id) ?? 0) > 0 ? 'var(--red)' : 'var(--green)' }}>{shekel(Math.abs(bal.get(a.id) ?? 0))}</span>
+              ) : (
+                <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
+              )}
             </Link>
           ))}
         </section>

@@ -1,11 +1,11 @@
-import { useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
+import { useBack } from './useBack';
 
 export function SubBar({ title, sub }: { title: string; sub?: string }) {
-  const nav = useNavigate();
+  const back = useBack();
   return (
     <header className="bar">
-      <button type="button" className="icon-btn" aria-label="חזרה" onClick={() => nav(-1)}>
+      <button type="button" className="icon-btn" aria-label="חזרה" onClick={() => back()}>
         <Icon name="back" />
       </button>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>

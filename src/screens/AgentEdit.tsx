@@ -5,6 +5,7 @@ import { SubBar } from '../components/SubBar';
 import { getAgent, hideAgent, nextAgentColor, PALETTE, productsOfAgent, saveAgent, type Product } from '../db/catalog';
 import { DAY_SHORT } from '../lib/dates';
 import { shekelCents } from '../lib/money';
+import { useBack } from '../components/useBack';
 
 function waLink(phone: string) {
   const digits = phone.replace(/\D/g, '');
@@ -15,7 +16,8 @@ function waLink(phone: string) {
 export function AgentEdit() {
   const { id } = useParams();
   const nav = useNavigate();
-  const isNew = id === 'new';
+  const back = useBack();
+  const isNew = !id || id === 'new';
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -52,7 +54,7 @@ export function AgentEdit() {
     try {
       const newId = await saveAgent({ id: isNew ? undefined : Number(id), name, phone, color, delivery_day: day, notes });
       if (isNew) nav(`/agent/${newId}`, { replace: true });
-      else nav(-1);
+      else back();
     } catch (e) {
       console.error(e);
       setError('השמירה נכשלה, נסה שוב');
@@ -63,7 +65,7 @@ export function AgentEdit() {
   async function hide() {
     if (!window.confirm(`להסיר את "${name}" מרשימת הסוכנים? ההיסטוריה שלו נשמרת.`)) return;
     await hideAgent(Number(id));
-    nav(-1);
+    back();
   }
 
   if (!loaded) return <SubBar title={isNew ? 'סוכן חדש' : 'סוכן'} />;
