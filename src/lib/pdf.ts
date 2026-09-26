@@ -1,7 +1,7 @@
 /** Renders an on-page element (Hebrew text is drawn by the browser, so RTL stays correct) into an A4 PDF. */
 export async function elementToPdf(el: HTMLElement): Promise<Blob> {
   const [{ toCanvas }, { jsPDF }] = await Promise.all([import('html-to-image'), import('jspdf')]);
-  const canvas = await toCanvas(el, { pixelRatio: 2, backgroundColor: '#ffffff', cacheBust: false });
+  const canvas = await toCanvas(el, { pixelRatio: 1.6, backgroundColor: '#ffffff', cacheBust: false });
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
   const pageW = 210;
   const pageH = 297;

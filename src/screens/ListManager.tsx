@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { askText } from '../components/Dialog';
 import { Icon } from '../components/Icon';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
@@ -25,16 +26,22 @@ export function ListManager({ title, hint, placeholder, load, add, rename, setAc
   }, []);
 
   async function onAdd() {
-    if (!name.trim()) return;
-    await add(name);
+    const n = name.trim();
+    if (!n) return;
+    const same = items.find((i) => i.name.trim() === n);
+    if (same) {
+      toast(same.active ? `"${n}" כבר ברשימה` : `"${n}" כבר קיים ומוסתר – לוחצים "החזרה" לידו`, 'err');
+      return;
+    }
+    await add(n);
     setName('');
-    toast('נוסף');
+    toast(`"${n}" נוסף`);
     refresh();
   }
 
   async function onRename(i: Item) {
-    const n = window.prompt('שם חדש', i.name);
-    if (n?.trim()) {
+    const n = await askText({ title: 'שם חדש', value: i.name });
+    if (n && n !== i.name) {
       await rename(i.id, n);
       refresh();
     }
@@ -48,13 +55,16 @@ export function ListManager({ title, hint, placeholder, load, add, rename, setAc
         <div className="box">
           {items.length === 0 && <span className="hint">הרשימה ריקה.</span>}
           {items.map((i) => (
-            <div key={i.id} className="line" style={{ opacity: i.active ? 1 : 0.5 }}>
-              <span className="name">{i.name}{!i.active && <span className="hint"> · מוסתר</span>}</span>
+            <div key={i.id} className="line">
+              <span className="name" style={i.active ? undefined : { color: 'var(--ink2)' }}>
+                {i.name}
+                {!i.active && <small className="muted-tag">מוסתר</small>}
+              </span>
               <button type="button" className="x-btn" aria-label={`שינוי שם ${i.name}`} onClick={() => onRename(i)}><Icon name="edit" size={18} /></button>
               <button
                 type="button"
                 className="chip"
-                style={{ height: 40 }}
+                style={{ height: 44 }}
                 onClick={async () => {
                   await setActive(i.id, !i.active);
                   refresh();

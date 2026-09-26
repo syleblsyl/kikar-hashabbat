@@ -47,6 +47,7 @@ export type AgentWeekRow = {
   id: number;
   name: string;
   color: string | null;
+  deliveryDay: number | null;
   delivered: number;
   deliveryDate: string | null;
   cost: number;
@@ -58,16 +59,17 @@ export async function agentsForWeek(weekStart: Date): Promise<AgentWeekRow[]> {
     id: number;
     name: string;
     color: string | null;
+    delivery_day: number | null;
     delivery_date: string | null;
     cost: number | null;
     lines: number | null;
   }>(
-    `SELECT a.id, a.name, a.color, d.delivery_date,
-            (SELECT SUM(l.qty_received * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id) AS cost,
+    `SELECT a.id, a.name, a.color, a.delivery_day, d.delivery_date,
+            (SELECT SUM((l.qty_received - l.qty_returned) * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id) AS cost,
             (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.qty_received > 0) AS lines
        FROM agents a
        LEFT JOIN deliveries d ON d.agent_id = a.id AND d.week_start = ?
-      WHERE a.active = 1
+      WHERE a.active = 1 OR d.id IS NOT NULL
       ORDER BY (d.id IS NULL), a.name`,
     [iso(weekStart)],
   );
@@ -75,6 +77,7 @@ export async function agentsForWeek(weekStart: Date): Promise<AgentWeekRow[]> {
     id: r.id,
     name: r.name,
     color: r.color,
+    deliveryDay: r.delivery_day,
     delivered: r.delivery_date ? 1 : 0,
     deliveryDate: r.delivery_date,
     cost: Number(r.cost ?? 0),

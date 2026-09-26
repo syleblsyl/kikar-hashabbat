@@ -24,6 +24,15 @@ export function iso(d: Date): string {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
+/** A valid yyyy-mm-dd string (real calendar date), else null. Used for dates that come from links. */
+export function parseIso(s: string | null | undefined): Date | null {
+  if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = fromIso(s);
+  if (Number.isNaN(d.getTime()) || iso(d) !== s) return null;
+  const y = d.getFullYear();
+  return y >= 2000 && y <= 2100 ? d : null;
+}
+
 export function fromIso(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d);

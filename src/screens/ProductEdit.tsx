@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
-import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
+import { ask } from '../components/Dialog';
+import { canLeave, useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
+import { toast } from '../components/Toast';
 import { SubBar } from '../components/SubBar';
 import { useBack } from '../components/useBack';
 import {
@@ -9,15 +12,17 @@ import {
   hideProduct,
   listAgents,
   listCategories,
+  nameTaken,
   priceHistory,
   saveProduct,
   type Agent,
   type Category,
 } from '../db/catalog';
 import { photoToDataUrl } from '../lib/image';
-import { parseAmount, shekelCents } from '../lib/money';
+import { parseAmountStrict, shekelCents } from '../lib/money';
 
 type Row = { agent_id: number; name: string; color: string | null; cost: string };
+type Snap = { name: string; catId: number | null; image: string | null; sale: string; returnable: boolean; rows: Row[] };
 type Hist = { kind: string; price: number; changed_at: string; agent: string | null };
 
 function priceText(n: number) {
@@ -28,9 +33,12 @@ export function ProductEdit() {
   const { id } = useParams();
   const [params] = useSearchParams();
   const back = useBack();
+  const nav = useNavigate();
   const isNew = !id || id === 'new';
 
-  const [loaded, setLoaded] = useState(false);
+  const [state, setState] = useState<'loading' | 'ready' | 'missing'>('loading');
+  const [initial, setInitial] = useState('');
+  const [bad, setBad] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [catId, setCatId] = useState<number | null>(null);
   const [image, setImage] = useState<string | null>(null);
@@ -51,25 +59,50 @@ export function ProductEdit() {
       const [a, c] = await Promise.all([listAgents(), listCategories()]);
       setAgents(a);
       setCats(c);
+      let snap: Snap = { name: '', catId: null, image: null, sale: '', returnable: true, rows: [] };
       if (!isNew && id) {
-        const p = await getProduct(Number(id));
-        if (p) {
-          setName(p.name);
-          setCatId(p.category_id);
-          setImage(p.image);
-          setSale(priceText(p.sale_price));
-          setReturnable(!!p.returnable);
-          setRows(p.agents.map((x) => ({ agent_id: x.agent_id, name: x.name, color: x.color, cost: priceText(x.cost_price) })));
-          setHistory(await priceHistory(p.id));
-        }
+        const p = Number.isFinite(Number(id)) ? await getProduct(Number(id)) : null;
+        if (!p) return setState('missing');
+        snap = {
+          name: p.name,
+          catId: p.category_id,
+          image: p.image,
+          sale: priceText(p.sale_price),
+          returnable: !!p.returnable,
+          rows: p.agents.map((x) => ({ agent_id: x.agent_id, name: x.name, color: x.color, cost: priceText(x.cost_price) })),
+        };
+        setHistory(await priceHistory(p.id));
       } else {
         const pre = Number(params.get('agent'));
         const ag = a.find((x) => x.id === pre);
-        if (ag) setRows([{ agent_id: ag.id, name: ag.name, color: ag.color, cost: '' }]);
+        if (ag) snap.rows = [{ agent_id: ag.id, name: ag.name, color: ag.color, cost: '' }];
       }
-      setLoaded(true);
+      setName(snap.name);
+      setCatId(snap.catId);
+      setImage(snap.image);
+      setSale(snap.sale);
+      setReturnable(snap.returnable);
+      setRows(snap.rows);
+      setInitial(JSON.stringify(snap));
+      setState('ready');
     })();
   }, [id, isNew, params]);
+
+  const current: Snap = { name, catId, image, sale, returnable, rows };
+  const dirty = state === 'ready' && JSON.stringify(current) !== initial;
+  useLeaveGuard(dirty);
+
+  /** Shows the problem at the top and moves to the field that needs fixing. */
+  function problem(msg: string, fieldId?: string) {
+    setError(msg);
+    setBad(fieldId ?? null);
+    toast(msg, 'err');
+    if (fieldId) {
+      const el = document.getElementById(fieldId);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el?.focus({ preventScroll: true });
+    }
+  }
 
   async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -98,9 +131,26 @@ export function ProductEdit() {
 
   async function save() {
     setError('');
-    if (!name.trim()) return setError('צריך לכתוב שם למוצר');
-    if (parseAmount(sale) <= 0) return setError('צריך לכתוב מחיר מכירה');
-    if (rows.some((r) => parseAmount(r.cost) <= 0)) return setError('צריך לכתוב מחיר קנייה לכל סוכן');
+    setBad(null);
+    if (!name.trim()) return problem('צריך לכתוב שם למוצר', 'pname');
+    const salePrice = parseAmountStrict(sale);
+    if (salePrice === null) return problem('מחיר המכירה לא תקין. כותבים רק מספר, למשל 12.50', 'psale');
+    if (salePrice <= 0) return problem('צריך לכתוב מחיר מכירה', 'psale');
+    const costs = rows.map((r) => parseAmountStrict(r.cost));
+    const badRow = costs.findIndex((c) => c === null || c <= 0);
+    if (badRow >= 0) {
+      return problem(
+        costs[badRow] === null ? `מחיר הקנייה אצל ${rows[badRow].name} לא תקין` : `צריך לכתוב מחיר קנייה אצל ${rows[badRow].name}`,
+        `cost-${rows[badRow].agent_id}`,
+      );
+    }
+    if (
+      (await nameTaken('products', name, isNew ? undefined : Number(id))) &&
+      !(await ask({ title: `כבר יש מוצר בשם "${name.trim()}"`, text: 'לשמור בכל זאת מוצר נוסף עם אותו שם?', ok: 'לשמור בכל זאת', cancel: 'לשנות את השם' }))
+    )
+      return;
+    if (rows.length === 0 && !(await ask({ title: 'לא נבחר סוכן', text: 'בלי סוכן המוצר לא יופיע בקבלת סחורה. לשמור בכל זאת?', ok: 'לשמור בלי סוכן', cancel: 'לבחור סוכן' })))
+      return;
     setSaving(true);
     try {
       await saveProduct({
@@ -108,28 +158,47 @@ export function ProductEdit() {
         name,
         category_id: catId,
         image,
-        sale_price: parseAmount(sale),
+        sale_price: salePrice,
         returnable,
-        agents: rows.map((r) => ({ agent_id: r.agent_id, cost_price: parseAmount(r.cost) })),
+        agents: rows.map((r, i) => ({ agent_id: r.agent_id, cost_price: costs[i] ?? 0 })),
       });
-      back();
+      toast(isNew ? `${name.trim()} נוסף למחירון` : 'המוצר נשמר');
+      back({ force: true });
     } catch (e) {
       console.error(e);
-      setError('השמירה נכשלה, נסה שוב');
+      problem('השמירה נכשלה, נסה שוב');
       setSaving(false);
     }
   }
 
   async function hide() {
-    if (!window.confirm(`להסיר את "${name}" מהמחירון? הנתונים של שבועות קודמים נשמרים.`)) return;
+    const ok = await ask({
+      title: `להסיר את "${name}" מהמחירון?`,
+      text: 'המוצר לא יופיע יותר בקבלת סחורה. שבועות קודמים לא משתנים, ואפשר להחזיר אותו מתחתית המחירון.',
+      ok: 'הסרה',
+      danger: true,
+    });
+    if (!ok) return;
     await hideProduct(Number(id));
-    back();
+    toast(`${name} הוסר מהמחירון`);
+    back({ force: true });
   }
 
   const available = agents.filter((a) => !rows.some((r) => r.agent_id === a.id));
   const tint = cats.find((c) => c.id === catId)?.color ?? '#F1EDE2';
 
-  if (!loaded) return <SubBar title={isNew ? 'מוצר חדש' : 'עריכת מוצר'} />;
+  if (state === 'loading') return <SubBar title={isNew ? 'מוצר חדש' : 'עריכת מוצר'} />;
+  if (state === 'missing') {
+    return (
+      <>
+        <SubBar title="מוצר" />
+        <div className="card empty-card">
+          <p>המוצר הזה לא נמצא.</p>
+          <Link to="/catalog" className="btn small" style={{ width: 'auto', padding: '0 20px' }}>למחירון</Link>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -158,7 +227,7 @@ export function ProductEdit() {
 
         <div className="field">
           <label htmlFor="pname">שם המוצר</label>
-          <input id="pname" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="למשל: קוגל ירושלמי" />
+          <input id="pname" className={`input${bad === 'pname' ? ' bad' : ''}`} enterKeyHint="next" value={name} onChange={(e) => setName(e.target.value)} placeholder="למשל: קוגל ירושלמי" />
         </div>
 
         <div className="field">
@@ -190,8 +259,8 @@ export function ProductEdit() {
 
         <div className="field">
           <label htmlFor="psale">מחיר מכירה בחנות</label>
-          <div className="money-in">
-            <input id="psale" inputMode="decimal" value={sale} onChange={(e) => setSale(e.target.value)} placeholder="0.00" style={{ color: 'var(--primary)' }} />
+          <div className={`money-in${bad === 'psale' ? ' bad' : ''}`}>
+            <input id="psale" inputMode="decimal" enterKeyHint="next" value={sale} onChange={(e) => setSale(e.target.value)} placeholder="0.00" style={{ color: 'var(--primary)' }} />
             <span>₪</span>
           </div>
         </div>
@@ -203,8 +272,9 @@ export function ProductEdit() {
             <div key={r.agent_id} className="line">
               <span className="dot" style={{ background: r.color ?? 'var(--primary)', width: 12, height: 12, borderRadius: 6 }} />
               <span className="name">{r.name}</span>
-              <span className="money-in">
+              <span className={`money-in${bad === `cost-${r.agent_id}` ? ' bad' : ''}`}>
                 <input
+                  id={`cost-${r.agent_id}`}
                   inputMode="decimal"
                   aria-label={`מחיר קנייה אצל ${r.name}`}
                   value={r.cost}
@@ -226,10 +296,10 @@ export function ProductEdit() {
                   {a.name}
                 </button>
               ))}
-              <Link to="/agent/new" className="chip add">+ סוכן חדש</Link>
+              <button type="button" className="chip add" onClick={async () => (await canLeave()) && nav('/agent/new')}>+ סוכן חדש</button>
             </div>
           ) : agents.length === 0 ? (
-            <Link to="/agent/new" className="dashed-btn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+ הוספת סוכן ראשון</Link>
+            <button type="button" className="dashed-btn" onClick={async () => (await canLeave()) && nav('/agent/new')}>+ הוספת סוכן ראשון</button>
           ) : available.length > 0 ? (
             <button type="button" className="dashed-btn" onClick={() => setPicking(true)}>+ {rows.length ? 'סוכן נוסף' : 'בחירת סוכן'}</button>
           ) : null}
@@ -274,18 +344,17 @@ export function ProductEdit() {
         )}
         <span className="hint">שינוי מחיר נשמר בהיסטוריה, ושבועות קודמים לא משתנים.</span>
 
-        {error && <div className="update-box err"><p>{error}</p></div>}
+        {error && <div className="update-box err" role="alert"><p>{error}</p></div>}
+
+        {!isNew && (
+          <button type="button" className="danger-link end-link" onClick={hide}>הסרה מהמחירון</button>
+        )}
       </div>
 
       <div className="sticky-save">
         <button type="button" className="btn" onClick={save} disabled={saving}>
           {saving ? 'שומר…' : 'שמירת המוצר'}
         </button>
-        {!isNew && (
-          <div style={{ textAlign: 'center' }}>
-            <button type="button" className="danger-link" onClick={hide}>הסרה מהמחירון</button>
-          </div>
-        )}
       </div>
     </>
   );

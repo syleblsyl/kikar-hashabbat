@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { HashRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { App as CapApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { BottomNav } from './components/BottomNav';
+import { DialogHost, dismissDialog } from './components/Dialog';
 import { getDb } from './db/sqlite';
 import { hasPin } from './lib/pin';
 import { startOfWeek, today } from './lib/dates';
-import { checkForUpdate, type UpdateInfo } from './lib/updater';
+import { checkForUpdateThrottled, type UpdateInfo } from './lib/updater';
 import { Home } from './screens/Home';
 import { Lock } from './screens/Lock';
 import { Settings } from './screens/Settings';
@@ -26,6 +27,7 @@ import { ToastHost } from './components/Toast';
 import { Report } from './screens/Report';
 import { BackupScreen } from './screens/BackupScreen';
 import { ListManager } from './screens/ListManager';
+import { UpdatePanel } from './components/UpdatePanel';
 import { backupDue as isBackupDue } from './db/backup';
 import { addExpenseType, addMethod, listExpenseTypes, listMethods, renameExpenseType, renameMethod, setExpenseTypeActive, setMethodActive } from './db/ops';
 import { useBack } from './components/useBack';
@@ -34,7 +36,30 @@ type Gate = 'loading' | 'setup' | 'locked' | 'open' | 'change-pin' | 'error';
 
 const LOCK_AFTER_MS = 60_000;
 
-function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () => void }) {
+/** One broken screen shows a message instead of a white page; moving to another screen resets it. */
+class ScreenBoundary extends Component<{ children: ReactNode; onHome: () => void }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(e: unknown) {
+    console.error(e);
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="card soon-box">
+        <h2>משהו השתבש במסך הזה</h2>
+        <p>הנתונים שלך שמורים. חוזרים למסך הבית ומנסים שוב.</p>
+        <button type="button" className="btn small" style={{ width: 'auto', padding: '0 24px' }} onClick={this.props.onHome}>
+          למסך הבית
+        </button>
+      </div>
+    );
+  }
+}
+
+function Shell({ gate, onLock, onChangePin }: { gate: Gate; onLock: () => void; onChangePin: () => void }) {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(today()));
   const [backupDue, setBackupDue] = useState(false);
@@ -42,9 +67,10 @@ function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () =>
   const back = useBack();
   const loc = useLocation();
   const scroller = useRef<HTMLDivElement>(null);
+  const covered = gate !== 'open';
 
   useEffect(() => {
-    checkForUpdate().then(setUpdate).catch(() => undefined);
+    checkForUpdateThrottled().then(setUpdate).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -52,99 +78,138 @@ function Shell({ onLock, onChangePin }: { onLock: () => void; onChangePin: () =>
     if (loc.pathname === '/') isBackupDue().then(setBackupDue).catch(() => undefined);
   }, [loc.pathname]);
 
+  // Android back: close a dialog first, then go back a screen (asking if something is unsaved), on home leave the app
   useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return;
+    if (!Capacitor.isNativePlatform() || covered) return;
     const h = CapApp.addListener('backButton', () => {
+      if (dismissDialog()) return;
       if (loc.pathname === '/') CapApp.minimizeApp();
       else back();
     });
     return () => {
       h.then((x) => x.remove());
     };
-  }, [loc.pathname, nav]);
+  }, [loc.pathname, back, covered]);
 
   const mainTabs = ['/', '/catalog', '/agents', '/reports', '/settings'];
   const showNav = mainTabs.includes(loc.pathname);
 
   return (
-    <div className="app">
+    <div className="app" aria-hidden={covered || undefined} inert={covered || undefined}>
       <div className="screen" ref={scroller}>
-        <Routes>
-          <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} backupDue={backupDue} />} />
-          <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} onChangePin={onChangePin} onLock={onLock} />} />
-          <Route path="/catalog" element={<Catalog />} />
-          <Route path="/product/:id" element={<ProductEdit />} />
-          <Route path="/agents" element={<Agents />} />
-          <Route path="/agent/new" element={<AgentEdit />} />
-          <Route path="/agent/:id" element={<AgentCard />} />
-          <Route path="/agent/:id/edit" element={<AgentEdit />} />
-          <Route path="/settings/categories" element={<Categories />} />
-          <Route path="/reports" element={<Report />} />
-          <Route path="/settings/backup" element={<BackupScreen />} />
-          <Route
-            path="/settings/methods"
-            element={
-              <ListManager
-                title="אמצעי תשלום"
-                hint="אמצעי התשלום שמופיעים במסך ההכנסה היומית. אמצעי שמוסתר לא יופיע יותר, אבל ההכנסות שנרשמו בו נשמרות."
-                placeholder="למשל: ביט"
-                load={() => listMethods(true)}
-                add={addMethod}
-                rename={renameMethod}
-                setActive={setMethodActive}
-              />
-            }
-          />
-          <Route
-            path="/settings/expense-types"
-            element={
-              <ListManager
-                title="סוגי הוצאות"
-                hint="הסוגים שמופיעים במסך ההוצאות ובדוח החודשי."
-                placeholder="למשל: שכירות"
-                load={() => listExpenseTypes(true)}
-                add={addExpenseType}
-                rename={renameExpenseType}
-                setActive={setExpenseTypeActive}
-              />
-            }
-          />
-          <Route path="/delivery" element={<Delivery />} />
-          <Route path="/returns" element={<Returns />} />
-          <Route path="/income" element={<Income />} />
-          <Route path="/payment" element={<PaymentPick />} />
-          <Route path="/expense" element={<Expenses />} />
-          <Route path="*" element={<Soon title="לא נמצא" what="המסך הזה לא קיים." />} />
-        </Routes>
+        <ScreenBoundary key={loc.pathname} onHome={() => nav('/', { replace: true })}>
+          <Routes>
+            <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} backupDue={backupDue} />} />
+            <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} onChangePin={onChangePin} onLock={onLock} />} />
+            <Route path="/catalog" element={<Catalog />} />
+            <Route path="/product/:id" element={<ProductEdit />} />
+            <Route path="/agents" element={<Agents />} />
+            <Route path="/agent/new" element={<AgentEdit />} />
+            <Route path="/agent/:id" element={<AgentCard />} />
+            <Route path="/agent/:id/edit" element={<AgentEdit />} />
+            <Route path="/settings/categories" element={<Categories />} />
+            <Route path="/reports" element={<Report />} />
+            <Route path="/settings/backup" element={<BackupScreen />} />
+            <Route
+              path="/settings/methods"
+              element={
+                <ListManager
+                  key="methods"
+                  title="אמצעי תשלום"
+                  hint="אמצעי התשלום שמופיעים במסך ההכנסה היומית. אמצעי שמוסתר לא יופיע יותר, אבל ההכנסות שנרשמו בו נשמרות."
+                  placeholder="למשל: ביט"
+                  load={() => listMethods(true)}
+                  add={addMethod}
+                  rename={renameMethod}
+                  setActive={setMethodActive}
+                />
+              }
+            />
+            <Route
+              path="/settings/expense-types"
+              element={
+                <ListManager
+                  key="expense-types"
+                  title="סוגי הוצאות"
+                  hint="הסוגים שמופיעים במסך ההוצאות ובדוח החודשי."
+                  placeholder="למשל: שכירות"
+                  load={() => listExpenseTypes(true)}
+                  add={addExpenseType}
+                  rename={renameExpenseType}
+                  setActive={setExpenseTypeActive}
+                />
+              }
+            />
+            <Route path="/delivery" element={<Delivery />} />
+            <Route path="/returns" element={<Returns />} />
+            <Route path="/income" element={<Income />} />
+            <Route path="/payment" element={<PaymentPick />} />
+            <Route path="/expense" element={<Expenses />} />
+            <Route path="*" element={<Soon title="לא נמצא" what="המסך הזה לא קיים." />} />
+          </Routes>
+        </ScreenBoundary>
       </div>
       {showNav && <BottomNav />}
-      <ToastHost />
+    </div>
+  );
+}
+
+function OpenError({ reason, onRetry }: { reason: string; onRetry: () => void }) {
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const newer = reason.includes('database-newer-than-app');
+  return (
+    <div className="app">
+      <div className="screen">
+        <div className="card soon-box">
+          <img src="/logo.webp" alt="" />
+          <h2>{newer ? 'צריך לעדכן את האפליקציה' : 'שגיאה בפתיחת הנתונים'}</h2>
+          <p>
+            {newer
+              ? 'הנתונים נשמרו בגרסה חדשה יותר של כיכר השבת. מעדכנים לגרסה האחרונה והכול יחזור.'
+              : 'הנתונים לא נמחקו. נסה שוב, ואם זה חוזר – סגור את האפליקציה לגמרי ופתח מחדש.'}
+          </p>
+          <button type="button" className="btn small" style={{ width: 'auto', padding: '0 24px' }} onClick={onRetry}>
+            ניסיון נוסף
+          </button>
+        </div>
+        <section className="card set-group">
+          <UpdatePanel update={update} setUpdate={setUpdate} />
+        </section>
+      </div>
     </div>
   );
 }
 
 export default function App() {
   const [gate, setGate] = useState<Gate>('loading');
+  const [reason, setReason] = useState('');
+  const [opened, setOpened] = useState(false);
   const hiddenAt = useRef<number | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        await getDb();
-        setGate((await hasPin()) ? 'locked' : 'setup');
-      } catch (e) {
-        console.error(e);
-        setGate('error');
-      }
-    })();
+  const init = useCallback(async () => {
+    setGate('loading');
+    try {
+      await getDb();
+      setGate((await hasPin()) ? 'locked' : 'setup');
+    } catch (e) {
+      console.error(e);
+      setReason(String((e as Error)?.message ?? e));
+      setGate('error');
+    }
   }, []);
 
+  useEffect(() => {
+    init();
+  }, [init]);
+
+  // after a minute in the background the app locks; what was on screen stays underneath (nothing typed is lost)
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     const h = CapApp.addListener('appStateChange', ({ isActive }) => {
       if (!isActive) {
         hiddenAt.current = Date.now();
       } else if (hiddenAt.current && Date.now() - hiddenAt.current > LOCK_AFTER_MS) {
+        dismissDialog();
         setGate((g) => (g === 'open' ? 'locked' : g));
       }
     });
@@ -153,8 +218,25 @@ export default function App() {
     };
   }, []);
 
+  // Android back while the lock screen is showing
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || gate === 'open') return;
+    const h = CapApp.addListener('backButton', () => {
+      if (dismissDialog()) return;
+      if (gate === 'change-pin') setGate('open');
+      else CapApp.minimizeApp();
+    });
+    return () => {
+      h.then((x) => x.remove());
+    };
+  }, [gate]);
+
   const lock = useCallback(() => setGate('locked'), []);
   const changePin = useCallback(() => setGate('change-pin'), []);
+  const unlocked = useCallback(() => {
+    setOpened(true);
+    setGate('open');
+  }, []);
 
   if (gate === 'loading') {
     return (
@@ -163,31 +245,30 @@ export default function App() {
       </div>
     );
   }
-  if (gate === 'error') {
-    return (
-      <div className="app">
-        <div className="card soon-box">
-          <h2>שגיאה בפתיחת הנתונים</h2>
-          <p>סגור את האפליקציה ופתח אותה שוב.</p>
-        </div>
-      </div>
-    );
-  }
-  if (gate === 'setup' || gate === 'locked' || gate === 'change-pin') {
-    return (
-      <div className="app">
+  if (gate === 'error') return <OpenError reason={reason} onRetry={init} />;
+
+  const lockScreen =
+    gate === 'setup' || gate === 'locked' || gate === 'change-pin' ? (
+      <div className="lock-layer">
         <Lock
           key={gate}
           mode={gate === 'setup' ? 'setup' : gate === 'change-pin' ? 'change' : 'unlock'}
-          onDone={() => setGate('open')}
+          onDone={unlocked}
           onCancel={gate === 'change-pin' ? () => setGate('open') : undefined}
         />
       </div>
-    );
-  }
+    ) : null;
+
   return (
-    <HashRouter>
-      <Shell onLock={lock} onChangePin={changePin} />
-    </HashRouter>
+    <>
+      {opened && (
+        <HashRouter>
+          <Shell gate={gate} onLock={lock} onChangePin={changePin} />
+        </HashRouter>
+      )}
+      {lockScreen}
+      <DialogHost />
+      <ToastHost />
+    </>
   );
 }

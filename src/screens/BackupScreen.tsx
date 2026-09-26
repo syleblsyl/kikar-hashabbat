@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
+import { ask } from '../components/Dialog';
 import { Icon } from '../components/Icon';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
-import { backupStats, lastBackup, makeBackup, markBackedUp, parseBackup, restoreBackup } from '../db/backup';
+import { BackupError, backupStats, lastBackup, makeBackup, markBackedUp, parseBackup, restoreBackup } from '../db/backup';
 import { fromIso, iso, today } from '../lib/dates';
-import { shareFile } from '../lib/share';
+import { shareFile, ShareCancelled } from '../lib/share';
 
 export function BackupScreen() {
   const [last, setLast] = useState<string | null>(null);
@@ -25,8 +26,11 @@ export function BackupScreen() {
       setLast(iso(today()));
       toast(`הגיבוי מוכן: ${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} אספקות`);
     } catch (e) {
-      console.error(e);
-      toast('הגיבוי נכשל');
+      if (e instanceof ShareCancelled) toast('הגיבוי לא נשמר – צריך לבחור לאן לשלוח אותו');
+      else {
+        console.error(e);
+        toast('הגיבוי נכשל. נסה שוב.', 'err');
+      }
     }
     setBusy(false);
   }
@@ -35,12 +39,32 @@ export function BackupScreen() {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
+    let b;
     try {
-      const b = parseBackup(await f.text());
-      const s = backupStats(b);
-      const when = new Date(b.created_at).toLocaleString('he-IL');
-      if (!window.confirm(`לשחזר את הגיבוי מ-${when}?\n${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} אספקות, ${s.days} ימי הכנסה.\n\nכל הנתונים שבטלפון עכשיו יוחלפו בנתוני הגיבוי.`)) return;
-      setBusy(true);
+      b = parseBackup(await f.text());
+    } catch (err) {
+      const reason = err instanceof BackupError ? err.reason : 'not-backup';
+      toast(
+        reason === 'newer'
+          ? 'הגיבוי נעשה בגרסה חדשה יותר של האפליקציה. צריך קודם לעדכן (הגדרות ← בדיקת עדכונים).'
+          : reason === 'broken'
+            ? 'קובץ הגיבוי פגום או חלקי. נסה קובץ גיבוי אחר.'
+            : 'הקובץ הזה לא נראה כמו גיבוי של כיכר השבת',
+        'err',
+      );
+      return;
+    }
+    const s = backupStats(b);
+    const when = new Date(b.created_at).toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+    const ok = await ask({
+      title: `לשחזר את הגיבוי מ-${when}?`,
+      text: `${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} אספקות, ${s.days} ימי הכנסה.\n\nכל הנתונים שבטלפון עכשיו יוחלפו בנתוני הגיבוי.`,
+      ok: 'שחזור',
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
       await restoreBackup(b);
       toast('השחזור הושלם');
       setTimeout(() => {
@@ -49,7 +73,7 @@ export function BackupScreen() {
       }, 800);
     } catch (err) {
       console.error(err);
-      toast('הקובץ הזה לא נראה כמו גיבוי של כיכר השבת');
+      toast('השחזור נכשל. הנתונים הקודמים נשארו כמו שהיו.', 'err');
       setBusy(false);
     }
   }

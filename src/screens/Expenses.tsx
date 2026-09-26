@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { ask, askText } from '../components/Dialog';
+import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
 import { addExpenseType, deleteExpense, listExpenses, listExpenseTypes, saveExpense, type Expense, type ExpenseType } from '../db/ops';
 import { fromIso, iso, MONTHS, shortDate, today } from '../lib/dates';
-import { parseAmount, shekel } from '../lib/money';
+import { parseAmountStrict, shekelSmart } from '../lib/money';
 
 export function Expenses() {
   const now = today();
@@ -17,6 +19,10 @@ export function Expenses() {
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const [orig, setOrig] = useState({ amount: '', note: '' });
+  const parsed = parseAmountStrict(amount);
+  useLeaveGuard(amount !== orig.amount || note !== orig.note);
 
   const from = iso(month);
   const to = iso(new Date(month.getFullYear(), month.getMonth() + 1, 0));
@@ -38,27 +44,40 @@ export function Expenses() {
     setEditId(null);
     setAmount('');
     setNote('');
+    setOrig({ amount: '', note: '' });
     setDate(iso(today()));
   }
 
   async function newType() {
-    const name = window.prompt('סוג הוצאה חדש (למשל: שכירות, חשמל, ניקיון)');
-    if (!name?.trim()) return;
+    const name = await askText({ title: 'סוג הוצאה חדש', placeholder: 'למשל: שכירות, חשמל, ניקיון', ok: 'הוספה' });
+    if (!name) return;
+    const all = await listExpenseTypes(true);
+    const same = all.find((t) => t.name.trim() === name);
+    if (same) {
+      if (same.active) setTypeId(same.id);
+      else toast(`"${name}" מוסתר. אפשר להחזיר אותו בהגדרות ← סוגי הוצאות`, 'err');
+      return;
+    }
     const id = await addExpenseType(name);
     setTypes(await listExpenseTypes());
     setTypeId(id);
   }
 
   async function save() {
-    const a = parseAmount(amount);
-    if (a <= 0) return toast('צריך לכתוב סכום');
+    if (parsed === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 350 או 12.50', 'err');
+    if (parsed <= 0) return toast('צריך לכתוב סכום', 'err');
     setSaving(true);
-    await saveExpense({ id: editId ?? undefined, date, type_id: typeId, amount: a, note });
-    toast(editId ? 'ההוצאה עודכנה' : `נשמרה הוצאה של ${shekel(a)}`);
-    const d = fromIso(date);
-    reset();
-    if (d.getMonth() !== month.getMonth() || d.getFullYear() !== month.getFullYear()) setMonth(new Date(d.getFullYear(), d.getMonth(), 1));
-    else load();
+    try {
+      await saveExpense({ id: editId ?? undefined, date, type_id: typeId, amount: parsed, note });
+      toast(editId ? 'ההוצאה עודכנה' : `נשמרה הוצאה של ${shekelSmart(parsed)}`);
+      const d = fromIso(date);
+      reset();
+      if (d.getMonth() !== month.getMonth() || d.getFullYear() !== month.getFullYear()) setMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+      else load();
+    } catch (e) {
+      console.error(e);
+      toast('השמירה נכשלה. נסה שוב.', 'err');
+    }
     setSaving(false);
   }
 
@@ -68,11 +87,13 @@ export function Expenses() {
     setTypeId(e.type_id);
     setAmount(String(e.amount));
     setNote(e.note ?? '');
+    setOrig({ amount: String(e.amount), note: e.note ?? '' });
     document.querySelector('.screen')?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function remove() {
-    if (!editId || !window.confirm('למחוק את ההוצאה?')) return;
+    if (!editId) return;
+    if (!(await ask({ title: 'למחוק את ההוצאה?', text: `${shekelSmart(parsed ?? 0)} · ${shortDate(fromIso(date))}`, ok: 'מחיקה', danger: true }))) return;
     await deleteExpense(editId);
     toast('ההוצאה נמחקה');
     reset();
@@ -93,8 +114,8 @@ export function Expenses() {
             {shortDate(fromIso(date))}
             <input type="date" aria-label="תאריך ההוצאה" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
           </label>
-          <div className="money-in">
-            <input inputMode="decimal" aria-label="סכום" placeholder="סכום" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <div className={`money-in${parsed === null ? ' bad' : ''}`}>
+            <input inputMode="decimal" aria-label="סכום" aria-invalid={parsed === null} placeholder="סכום" value={amount} onChange={(e) => setAmount(e.target.value)} />
             <span>₪</span>
           </div>
         </div>
@@ -102,12 +123,13 @@ export function Expenses() {
           <span className="lbl">סוג ההוצאה</span>
           <div className="chips">
             {types.map((t) => (
-              <button key={t.id} type="button" className={`chip${typeId === t.id ? ' on' : ''}`} onClick={() => setTypeId(t.id)}>
+              <button key={t.id} type="button" aria-pressed={typeId === t.id} className={`chip${typeId === t.id ? ' on' : ''}`} onClick={() => setTypeId(t.id)}>
                 {t.name}
               </button>
             ))}
             <button type="button" className="chip add" onClick={newType}>+ סוג חדש</button>
           </div>
+          {parsed === null && <div className="field-err">כותבים רק מספר, למשל 350 או 12.50</div>}
           {types.length === 0 && <span className="hint">עוד אין סוגי הוצאות. לוחצים "+ סוג חדש" ומוסיפים שכירות, חשמל וכו׳.</span>}
         </div>
         <div className="field">
@@ -130,7 +152,7 @@ export function Expenses() {
           </button>
           <div className="label" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <b>{MONTHS[month.getMonth()]} {month.getFullYear()}</b>
-            <span>סה״כ {shekel(total)}</span>
+            <span>סה״כ {shekelSmart(total)}</span>
           </div>
           <button
             type="button"
@@ -145,7 +167,7 @@ export function Expenses() {
         {byType.size > 0 && (
           <div className="week-notes" style={{ justifyContent: 'flex-start' }}>
             {[...byType.entries()].map(([k, v]) => (
-              <span key={k}>{k}: {shekel(v)}</span>
+              <span key={k}>{k}: {shekelSmart(v)}</span>
             ))}
           </div>
         )}
@@ -162,7 +184,7 @@ export function Expenses() {
                 <b>{e.type ?? 'ללא סוג'}</b>
                 {e.note && <span>{e.note}</span>}
               </span>
-              <span className="amt">{shekel(e.amount)}</span>
+              <span className="amt">{shekelSmart(e.amount)}</span>
             </button>
           ))}
         </div>

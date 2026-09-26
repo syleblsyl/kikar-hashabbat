@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
-import { CATEGORY_TINTS, listAgents, listCategories, listProducts, type Agent, type Category, type Product } from '../db/catalog';
+import { CATEGORY_TINTS, hiddenProducts, listAgents, listCategories, listProducts, unhideProduct, type Agent, type Category, type Product } from '../db/catalog';
+import { toast } from '../components/Toast';
 import { shekelCents } from '../lib/money';
 
 export function Catalog() {
@@ -11,15 +12,26 @@ export function Catalog() {
   const [cat, setCat] = useState<number | 'all'>('all');
   const [agent, setAgent] = useState<number | 'all'>('all');
   const [q, setQ] = useState('');
+  const [hidden, setHidden] = useState<{ id: number; name: string }[]>([]);
+  const [showHidden, setShowHidden] = useState(false);
+
+  async function load() {
+    const [p, c, a, h] = await Promise.all([listProducts(), listCategories(), listAgents(), hiddenProducts()]);
+    setProducts(p);
+    setCats(c);
+    setAgents(a);
+    setHidden(h);
+  }
 
   useEffect(() => {
-    (async () => {
-      const [p, c, a] = await Promise.all([listProducts(), listCategories(), listAgents()]);
-      setProducts(p);
-      setCats(c);
-      setAgents(a);
-    })();
+    load();
   }, []);
+
+  async function restore(id: number, name: string) {
+    await unhideProduct(id);
+    toast(`${name} חזר למחירון`);
+    load();
+  }
 
   const tintOf = useMemo(() => {
     const m = new Map<number, string>();
@@ -31,7 +43,7 @@ export function Catalog() {
     (p) =>
       (cat === 'all' || p.category_id === cat) &&
       (agent === 'all' || p.agents.some((a) => a.agent_id === agent)) &&
-      (q.trim() === '' || p.name.includes(q.trim())),
+      (q.trim() === '' || p.name.toLowerCase().includes(q.trim().toLowerCase())),
   );
 
   return (
@@ -98,7 +110,7 @@ export function Catalog() {
                   <div className="img" style={{ background: tintOf(p.category_id) }}>
                     {p.image ? <img src={p.image} alt="" /> : <span className="letter">{p.name.charAt(0)}</span>}
                     <span className="badge" style={{ color: p.returnable ? 'var(--green)' : 'var(--ink2)' }}>
-                      {p.returnable ? 'חזרה' : 'ללא חזרה'}
+                      {p.returnable ? 'ניתן להחזרה' : 'ללא החזרה'}
                     </span>
                   </div>
                   <div className="body">
@@ -112,6 +124,25 @@ export function Catalog() {
           </div>
           {products && shown.length === 0 && <p className="hint" style={{ textAlign: 'center' }}>לא נמצאו מוצרים</p>}
         </>
+      )}
+
+      {hidden.length > 0 && (
+        <section className="card list" style={{ margin: '4px 16px 16px' }}>
+          <button type="button" className="row hidden-toggle" style={{ borderTop: 0 }} aria-expanded={showHidden} onClick={() => setShowHidden((v) => !v)}>
+            <span className="grow">
+              <b>מוצרים שהוסרו ({hidden.length})</b>
+              <span>אפשר להחזיר מוצר למחירון</span>
+            </span>
+            <span style={{ color: 'var(--ink2)', transform: showHidden ? 'rotate(90deg)' : undefined }}><Icon name="chevron" /></span>
+          </button>
+          {showHidden &&
+            hidden.map((p) => (
+              <div key={p.id} className="row dimmed">
+                <span className="grow"><b>{p.name}</b></span>
+                <button type="button" className="chip" onClick={() => restore(p.id, p.name)}>החזרה</button>
+              </div>
+            ))}
+        </section>
       )}
     </>
   );

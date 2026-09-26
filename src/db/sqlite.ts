@@ -24,9 +24,10 @@ async function initWebStore() {
 async function migrate(conn: SQLiteDBConnection) {
   const res = await conn.query('PRAGMA user_version;');
   const current = Number(res.values?.[0]?.user_version ?? 0);
+  if (current > MIGRATIONS.length) throw new Error('database-newer-than-app');
   for (let v = current; v < MIGRATIONS.length; v++) {
-    await conn.execute(MIGRATIONS[v], true);
-    await conn.execute(`PRAGMA user_version = ${v + 1};`, false);
+    // the version bump runs inside the same transaction, so a killed app never half-applies a step
+    await conn.execute(`${MIGRATIONS[v]}\nPRAGMA user_version = ${v + 1};\n`, true);
   }
 }
 
@@ -47,10 +48,16 @@ async function openDb(): Promise<SQLiteDBConnection> {
 export async function getDb(): Promise<SQLiteDBConnection> {
   if (db) return db;
   if (!opening) {
-    opening = openDb().then((c) => {
-      db = c;
-      return c;
-    });
+    opening = openDb().then(
+      (c) => {
+        db = c;
+        return c;
+      },
+      (e) => {
+        opening = null; // allow a retry
+        throw e;
+      },
+    );
   }
   return opening;
 }

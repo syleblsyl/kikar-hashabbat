@@ -11,8 +11,10 @@ export function PaymentPick() {
   const [bal, setBal] = useState<Map<number, number>>(new Map());
 
   useEffect(() => {
-    Promise.all([listAgents(), balances()]).then(([a, b]) => {
-      setAgents([...a].sort((x, y) => (b.get(y.id) ?? 0) - (b.get(x.id) ?? 0)));
+    Promise.all([listAgents(), listAgents(true), balances()]).then(([a, h, b]) => {
+      // hidden agents still appear while there is something open with them
+      const all = [...a, ...h.filter((x) => Math.abs(b.get(x.id) ?? 0) > 0.004)];
+      setAgents(all.sort((x, y) => (b.get(y.id) ?? 0) - (b.get(x.id) ?? 0)));
       setBal(b);
     });
   }, []);
@@ -31,9 +33,12 @@ export function PaymentPick() {
               <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{initialOf(a.name)}</span>
               <span className="grow">
                 <b>{a.name}</b>
-                <span>{b > 0.004 ? 'יתרה לתשלום' : b < -0.004 ? 'הסוכן חייב לך' : 'אין חוב'}</span>
+                <span>
+                  {b > 0.004 ? 'יתרה לתשלום' : b < -0.004 ? 'הסוכן חייב לך' : 'אין חוב'}
+                  {!a.active ? ' · מוסתר' : ''}
+                </span>
               </span>
-              <span className="amt" style={{ color: b > 0.004 ? 'var(--red)' : b < -0.004 ? 'var(--green)' : 'var(--ink2)' }}>{shekel(Math.abs(b))}</span>
+              <span className="amt nowrap" style={{ color: b > 0.004 ? 'var(--red)' : b < -0.004 ? 'var(--green)' : 'var(--ink2)' }}>{shekel(Math.abs(b))}</span>
             </Link>
           );
         })}

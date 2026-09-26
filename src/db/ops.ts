@@ -15,6 +15,8 @@ export type DeliveryItem = {
   qty_received: number;
   qty_returned: number;
   inLine: boolean;
+  /** quantity that arrived in this agent's previous delivery (0 if none) */
+  prev_qty: number;
 };
 
 export async function getDelivery(agentId: number, weekStart: string): Promise<Delivery | null> {
@@ -40,6 +42,12 @@ export async function deliveryItems(agentId: number, weekStart: string): Promise
       WHERE ap.agent_id = ? AND ap.active = 1 AND p.active = 1`,
     [agentId],
   );
+  const prevRows = await query<{ product_id: number; qty_received: number }>(
+    `SELECT l.product_id, l.qty_received FROM delivery_lines l
+      WHERE l.delivery_id = (SELECT id FROM deliveries WHERE agent_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1)`,
+    [agentId, weekStart],
+  );
+  const prev = new Map(prevRows.map((r) => [r.product_id, Number(r.qty_received)]));
   const ids = new Set<number>([...current.map((c) => c.product_id), ...lines.map((l) => l.product_id)]);
   if (ids.size === 0) return [];
   const products = await query<{ id: number; name: string; image: string | null; tint: string | null; sort: number }>(
@@ -61,6 +69,7 @@ export async function deliveryItems(agentId: number, weekStart: string): Promise
       qty_received: Number(line?.qty_received ?? 0),
       qty_returned: Number(line?.qty_returned ?? 0),
       inLine: !!line,
+      prev_qty: prev.get(p.id) ?? 0,
       sort: p.sort,
     };
   });
@@ -69,8 +78,9 @@ export async function deliveryItems(agentId: number, weekStart: string): Promise
 }
 
 /** Saves the quantities that arrived. Lines at 0 are removed; an empty delivery is removed. */
-export async function saveDelivery(agentId: number, deliveryDate: string, items: DeliveryItem[]) {
-  const weekStart = iso(startOfWeek(fromIso(deliveryDate)));
+export async function saveDelivery(agentId: number, weekStart: string, deliveryDate: string, items: DeliveryItem[]) {
+  const end = iso(addDays(fromIso(weekStart), 6));
+  if (deliveryDate < weekStart || deliveryDate > end) throw new Error('date-outside-week');
   let d = await getDelivery(agentId, weekStart);
   const withQty = items.filter((i) => i.qty_received > 0);
   if (!d && withQty.length === 0) return;
@@ -150,20 +160,22 @@ export async function saveReturns(deliveryId: number, returnsDate: string, items
   ]);
 }
 
-/**
- * The oldest week before the current one that still waits for returns (agents collect on Sunday,
- * so the current week's returns are normally recorded next week).
- */
-export async function pendingReturnsWeek(): Promise<string | null> {
+/** Weeks before the current one that still wait for returns, most recent first. */
+export async function pendingReturnsWeeks(): Promise<{ week: string; agents: number }[]> {
   const current = iso(startOfWeek(new Date()));
-  const rows = await query<{ week_start: string }>(
-    `SELECT d.week_start FROM deliveries d
+  const rows = await query<{ week_start: string; n: number }>(
+    `SELECT d.week_start, COUNT(DISTINCT d.id) AS n FROM deliveries d
       WHERE d.returns_done = 0 AND d.week_start < ?
         AND EXISTS (SELECT 1 FROM delivery_lines l WHERE l.delivery_id = d.id AND l.returnable = 1 AND l.qty_received > 0)
-      ORDER BY d.week_start ASC LIMIT 1`,
+      GROUP BY d.week_start ORDER BY d.week_start DESC`,
     [current],
   );
-  return rows[0]?.week_start ?? null;
+  return rows.map((r) => ({ week: r.week_start, agents: Number(r.n) }));
+}
+
+/** The week the returns screen should open on: the latest week still waiting (agents collect on Sunday). */
+export async function pendingReturnsWeek(): Promise<string | null> {
+  return (await pendingReturnsWeeks())[0]?.week ?? null;
 }
 
 /* ======================= payment methods & income ======================= */
@@ -185,6 +197,16 @@ export async function renameMethod(id: number, name: string) {
 
 export async function setMethodActive(id: number, active: boolean) {
   await run('UPDATE payment_methods SET active = ? WHERE id = ?', [active ? 1 : 0, id]);
+}
+
+/** Payment methods to show for a day: the active ones, plus hidden ones that already have an amount that day. */
+export async function methodsForDay(date: string): Promise<Method[]> {
+  return query<Method>(
+    `SELECT * FROM payment_methods m
+      WHERE m.active = 1 OR EXISTS (SELECT 1 FROM daily_income i WHERE i.method_id = m.id AND i.date = ? AND i.amount <> 0)
+      ORDER BY m.sort, m.id`,
+    [date],
+  );
 }
 
 export async function incomeForDay(date: string): Promise<Map<number, number>> {

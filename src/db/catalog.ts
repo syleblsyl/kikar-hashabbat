@@ -55,13 +55,32 @@ export async function removeCategory(id: number) {
 
 /* ---------- agents ---------- */
 
-export async function listAgents(): Promise<Agent[]> {
+export async function listAgents(hidden = false): Promise<Agent[]> {
   return query<Agent>(
     `SELECT a.*,
             (SELECT COUNT(*) FROM agent_products ap JOIN products p ON p.id = ap.product_id
               WHERE ap.agent_id = a.id AND ap.active = 1 AND p.active = 1) AS products
-       FROM agents a WHERE a.active = 1 ORDER BY a.name`,
+       FROM agents a WHERE a.active = ? ORDER BY a.name`,
+    [hidden ? 0 : 1],
   );
+}
+
+export async function unhideAgent(id: number) {
+  await run('UPDATE agents SET active = 1 WHERE id = ?', [id]);
+}
+
+export async function unhideProduct(id: number) {
+  await run('UPDATE products SET active = 1 WHERE id = ?', [id]);
+}
+
+export async function hiddenProducts(): Promise<{ id: number; name: string }[]> {
+  return query<{ id: number; name: string }>('SELECT id, name FROM products WHERE active = 0 ORDER BY name');
+}
+
+/** Case-insensitive name clash check for agents / products (excluding the one being edited). */
+export async function nameTaken(table: 'agents' | 'products', name: string, exceptId?: number): Promise<boolean> {
+  const rows = await query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE TRIM(name) = TRIM(?) AND id <> ?`, [name, exceptId ?? 0]);
+  return Number(rows[0]?.n ?? 0) > 0;
 }
 
 export async function getAgent(id: number): Promise<Agent | null> {

@@ -11,6 +11,9 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/** The person closed the share sheet without choosing where to send the file. */
+export class ShareCancelled extends Error {}
+
 /**
  * On the phone: writes the file and opens Android's share sheet (WhatsApp, Drive, email…).
  * In a browser: downloads it.
@@ -29,5 +32,10 @@ export async function shareFile(filename: string, blob: Blob, title: string) {
   }
   const data = await blobToBase64(blob);
   const res = await Filesystem.writeFile({ path: filename, data, directory: Directory.Cache });
-  await Share.share({ title, dialogTitle: title, files: [res.uri] });
+  try {
+    await Share.share({ title, dialogTitle: title, files: [res.uri] });
+  } catch (e) {
+    if (/cancel/i.test(String((e as Error)?.message ?? e))) throw new ShareCancelled();
+    throw e;
+  }
 }

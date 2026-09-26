@@ -1,6 +1,7 @@
 import { getSetting, setSetting } from './repo';
 import { query, runSet } from './sqlite';
-import { iso, today } from '../lib/dates';
+import { MIGRATIONS } from './schema';
+import { fromIso, iso, today } from '../lib/dates';
 
 // parents before children, so a restore can insert in this order
 const TABLES = [
@@ -58,17 +59,43 @@ export async function backupDue(): Promise<boolean> {
   if (Number(row?.n ?? 0) === 0) return false;
   const last = await lastBackup();
   if (!last) return true;
-  return Date.now() - new Date(last).getTime() > 7 * 24 * 3600 * 1000;
+  return today().getTime() - fromIso(last).getTime() > 7 * 24 * 3600 * 1000;
 }
 
+export class BackupError extends Error {
+  constructor(public reason: 'not-backup' | 'newer' | 'broken') {
+    super(reason);
+  }
+}
+
+/** Reads a backup file and checks that it really is one, from this app, that this version can read. */
 export function parseBackup(text: string): Backup {
-  const b = JSON.parse(text) as Backup;
-  if (b?.app !== 'kikar-hashabbat' || !b.tables) throw new Error('not a backup');
+  let b: Backup;
+  try {
+    b = JSON.parse(text) as Backup;
+  } catch {
+    throw new BackupError('not-backup');
+  }
+  if (!b || typeof b !== 'object' || b.app !== 'kikar-hashabbat' || !b.tables || typeof b.tables !== 'object') throw new BackupError('not-backup');
+  if (b.format !== 1 || !Number.isInteger(b.schema)) throw new BackupError('broken');
+  if (b.schema > MIGRATIONS.length) throw new BackupError('newer');
+  if (!b.created_at || Number.isNaN(new Date(b.created_at).getTime())) throw new BackupError('broken');
+  for (const t of TABLES) {
+    const rows = b.tables[t];
+    if (rows !== undefined && (!Array.isArray(rows) || rows.some((r) => !r || typeof r !== 'object'))) throw new BackupError('broken');
+  }
+  if (!Array.isArray(b.tables.agents) || !Array.isArray(b.tables.products)) throw new BackupError('broken');
   return b;
 }
 
 /** Replaces all data with the backup's (the PIN stays as it is on this phone). */
 export async function restoreBackup(b: Backup) {
+  // only columns that exist in this version's tables (an older backup may have fewer)
+  const known = new Map<string, Set<string>>();
+  for (const t of TABLES) {
+    const cols = await query<{ name: string }>(`PRAGMA table_info(${t})`);
+    known.set(t, new Set(cols.map((c) => c.name)));
+  }
   const set: { statement: string; values?: unknown[] }[] = [];
   for (const t of [...TABLES].reverse()) {
     set.push({ statement: t === 'settings' ? `DELETE FROM settings WHERE key NOT IN ('pin_hash', 'pin_salt')` : `DELETE FROM ${t}` });
@@ -76,12 +103,18 @@ export async function restoreBackup(b: Backup) {
   for (const t of TABLES) {
     for (const row of b.tables[t] ?? []) {
       if (t === 'settings' && PRIVATE_SETTINGS.includes(String(row.key))) continue;
-      const cols = Object.keys(row).filter((c) => /^[a-z_]+$/.test(c));
+      const cols = Object.keys(row).filter((c) => /^[a-z_]+$/.test(c) && known.get(t)?.has(c));
+      if (cols.length === 0) continue;
       set.push({
         statement: `INSERT OR REPLACE INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
         values: cols.map((c) => row[c]),
       });
     }
   }
+  // the phone now holds exactly what is in the backup file, so there is nothing new to back up
+  set.push({
+    statement: 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    values: ['last_backup', iso(today())],
+  });
   await runSet(set);
 }

@@ -11,6 +11,7 @@ const config: CapacitorConfig = {
   plugins: {
     SystemBars: {
       insetsHandling: 'css',
+      style: 'LIGHT',
       initialViewportFitValueHint: 'cover',
     },
     CapacitorSQLite: {

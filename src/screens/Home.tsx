@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { WeekBar } from '../components/WeekBar';
-import { agentsForWeek, openReturnsCount, weekSummary, type AgentWeekRow, type WeekSummary } from '../db/repo';
-import { pendingReturnsWeek } from '../db/ops';
-import { fromIso, iso, longDate, shortDate, startOfWeek, today } from '../lib/dates';
+import { agentsForWeek, weekSummary, type AgentWeekRow, type WeekSummary } from '../db/repo';
+import { pendingReturnsWeeks } from '../db/ops';
+import { DAY_NAMES, fromIso, iso, longDate, shortDate, startOfWeek, today } from '../lib/dates';
 import { dayEvents, hebDate, weekInfo } from '../lib/hebrew';
 import { products, shekel } from '../lib/money';
 import type { UpdateInfo } from '../lib/updater';
@@ -21,7 +21,7 @@ type Props = {
 export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Props) {
   const [sum, setSum] = useState<WeekSummary | null>(null);
   const [agents, setAgents] = useState<AgentWeekRow[]>([]);
-  const [openWeek, setOpenWeek] = useState<{ week: string; count: number } | null>(null);
+  const [pending, setPending] = useState<{ week: string; agents: number }[]>([]);
   const now = today();
   const thisWeek = startOfWeek(now);
   const isCurrent = weekStart.getTime() === thisWeek.getTime();
@@ -32,12 +32,11 @@ export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Pro
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [s, a, ow] = await Promise.all([weekSummary(weekStart), agentsForWeek(weekStart), pendingReturnsWeek()]);
+      const [s, a, pw] = await Promise.all([weekSummary(weekStart), agentsForWeek(weekStart), pendingReturnsWeeks()]);
       if (!alive) return;
       setSum(s);
       setAgents(a);
-      if (ow) setOpenWeek({ week: ow, count: await openReturnsCount(fromIso(ow)) });
-      else setOpenWeek(null);
+      setPending(pw);
     })();
     return () => {
       alive = false;
@@ -114,12 +113,21 @@ export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Pro
         </div>
       </section>
 
-      {openWeek && (
-        <Link to={`/returns?week=${openWeek.week}`} className="banner gold">
+      {pending.length > 0 && (
+        <Link to={`/returns?week=${pending[0].week}`} className="banner gold">
           <span className="ic"><Icon name="undo" /></span>
           <span className="txt">
-            <b>החזרות · {weekInfo(fromIso(openWeek.week)).title}</b>
-            <span>{openWeek.count === 1 ? 'סוכן אחד עדיין לא נרשם' : `${openWeek.count} סוכנים עדיין לא נרשמו`}</span>
+            {pending.length === 1 ? (
+              <>
+                <b>החזרות · {weekInfo(fromIso(pending[0].week)).title}</b>
+                <span>{pending[0].agents === 1 ? 'סוכן אחד עדיין לא נרשם' : `${pending[0].agents} סוכנים עדיין לא נרשמו`}</span>
+              </>
+            ) : (
+              <>
+                <b>החזרות פתוחות מ-{pending.length} שבועות</b>
+                <span>{pending.reduce((n, w) => n + w.agents, 0)} אספקות מחכות לרישום ההחזרות</span>
+              </>
+            )}
           </span>
           <span className="go">לרישום</span>
         </Link>
@@ -167,9 +175,17 @@ export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Pro
               <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{initialOf(a.name)}</span>
               <span className="grow">
                 <b>{a.name}</b>
-                <span>{a.delivered && a.deliveryDate ? `הגיע ${shortDate(fromIso(a.deliveryDate))} · ${products(a.lines)}` : 'עוד לא הגיע'}</span>
+                <span>
+                  {a.delivered && a.deliveryDate
+                    ? `הגיע ${shortDate(fromIso(a.deliveryDate))} · ${products(a.lines)}`
+                    : a.deliveryDay != null
+                      ? isCurrent && a.deliveryDay === now.getDay()
+                        ? 'מגיע היום'
+                        : `עוד לא הגיע · מגיע ביום ${DAY_NAMES[a.deliveryDay]}`
+                      : 'עוד לא הגיע'}
+                </span>
               </span>
-              {a.delivered ? <span className="amt">{shekel(a.cost)}</span> : <span className="pill gold">לרישום</span>}
+              {a.delivered ? <span className="amt nowrap">{shekel(a.cost)}</span> : <span className="pill gold">לרישום</span>}
             </Link>
           ))
         )}

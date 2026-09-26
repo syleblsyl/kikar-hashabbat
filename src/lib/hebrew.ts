@@ -19,6 +19,9 @@ const SPELLING: [RegExp, string][] = [
   [/(^|\s|־)קרח($|\s|־)/g, '$1קורח$2'],
   [/(^|\s|־)חקת($|\s|־)/g, '$1חוקת$2'],
   [/(^|\s|־)תצוה($|\s|־)/g, '$1תצווה$2'],
+  [/^חשון$/g, 'חשוון'],
+  [/(^|\s)חשון(\s|$)/g, '$1חשוון$2'],
+  [/^שמיני עצרת$/g, 'שמיני עצרת · שמחת תורה'],
 ];
 
 export const clean = (s: string) => {
@@ -47,7 +50,7 @@ export function hebDay(d: Date): string {
   return gematriya(new HDate(d).getDate());
 }
 
-export type DayEvent = { name: string; short: string; chag: boolean; erev: boolean; cholHamoed: boolean; fast: boolean };
+export type DayEvent = { name: string; short: string; chag: boolean; erev: boolean; cholHamoed: boolean; fast: boolean; minor: boolean };
 
 function baseName(e: Event): string {
   const b = (e as Event & { basename?: () => string }).basename?.();
@@ -55,11 +58,13 @@ function baseName(e: Event): string {
 }
 
 const SKIP = flags.MODERN_HOLIDAY | flags.SPECIAL_SHABBAT | flags.DAILY_LEARNING | flags.OMER_COUNT | flags.SHABBAT_MEVARCHIM | flags.MOLAD | flags.YOM_KIPPUR_KATAN;
+// minor days that do not matter for a food store
+const SKIP_DESC = new Set(['Leil Selichot', 'Chag HaBanot', 'Purim Katan', 'Shushan Purim Katan', 'Rosh Hashana LaBehemot', 'Pesach Sheni', 'BeHaB', "Ta'anit BeHaB"]);
 
 export function dayEvents(d: Date): DayEvent[] {
   const evs: Event[] = HebrewCalendar.getHolidaysOnDate(new HDate(d), IL) ?? [];
   return evs
-    .filter((e) => !(e.getFlags() & SKIP))
+    .filter((e) => !(e.getFlags() & SKIP) && !SKIP_DESC.has(e.getDesc()) && !/BeHaB/i.test(e.getDesc()))
     .map((e) => {
       const f = e.getFlags();
       const name = clean(e.render('he'));
@@ -74,6 +79,7 @@ export function dayEvents(d: Date): DayEvent[] {
         erev: !!(f & flags.EREV),
         cholHamoed: !!(f & flags.CHOL_HAMOED),
         fast: !!(f & (flags.MAJOR_FAST | flags.MINOR_FAST)),
+        minor: !!(f & flags.MINOR_HOLIDAY),
       };
     });
 }
@@ -123,7 +129,7 @@ export function weekInfo(weekStart: Date): WeekInfo {
   for (let i = 0; i < 7; i++) {
     for (const e of dayEvents(addDays(weekStart, i))) {
       if (i === 6 && sedra.chag && (e.chag || e.cholHamoed)) continue; // already the title
-      if (!(e.chag || e.erev || e.fast || e.cholHamoed || /פורים|חנוכה/.test(e.name))) continue;
+      if (!(e.chag || e.erev || e.fast || e.cholHamoed || e.minor)) continue;
       if (seen.has(e.short) || e.short === title || title.endsWith(e.short.replace('חול המועד ', ''))) continue;
       seen.add(e.short);
       notes.push({ day: i, name: e.short, chag: e.chag });

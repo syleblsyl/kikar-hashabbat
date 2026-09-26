@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { ask } from '../components/Dialog';
+import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
 import { Stepper } from '../components/Stepper';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
 import { WeekBar } from '../components/WeekBar';
-import { listAgents, type Agent } from '../db/catalog';
+import { getAgent, listAgents, type Agent } from '../db/catalog';
 import { deleteDelivery, deliveredAgents, deliveryItems, getDelivery, saveDelivery, type DeliveryItem } from '../db/ops';
-import { addDays, fromIso, iso, shortDate, startOfWeek, today } from '../lib/dates';
-import { shekelCents } from '../lib/money';
+import { addDays, fromIso, iso, parseIso, shortDate, startOfWeek, today } from '../lib/dates';
+import { qty, shekelCents, shekelSmart } from '../lib/money';
 import { useBack } from '../components/useBack';
 
 /** Default delivery date inside a week: today if it is in that week, else the agent's usual day. */
@@ -21,33 +23,56 @@ function defaultDate(weekStart: Date, agent: Agent | undefined): string {
 export function Delivery() {
   const [params, setParams] = useSearchParams();
   const back = useBack();
-  const weekStart = useMemo(() => startOfWeek(params.get('week') ? fromIso(params.get('week')!) : today()), [params]);
+  const weekParam = params.get('week');
+  const weekStart = useMemo(() => startOfWeek(parseIso(weekParam) ?? today()), [weekParam]);
+  const isThisWeek = weekStart.getTime() === startOfWeek(today()).getTime();
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [done, setDone] = useState<Set<number> | null>(null);
-  // no agent in the link: the one due today who has not delivered yet, else the first still missing
   const agentId = Number(params.get('agent')) || 0;
-  useEffect(() => {
-    if (agentId || !agents || !done || agents.length === 0) return;
-    const pick =
-      agents.find((a) => a.delivery_day === today().getDay() && !done.has(a.id)) ?? agents.find((a) => !done.has(a.id)) ?? agents[0];
-    const p = new URLSearchParams(params);
-    p.set('agent', String(pick.id));
-    setParams(p, { replace: true });
-  }, [agentId, agents, done]);
-  const agent = agents?.find((a) => a.id === agentId);
   const [items, setItems] = useState<DeliveryItem[] | null>(null);
   const [date, setDate] = useState('');
   const [existingId, setExistingId] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const chipsRef = useRef<HTMLDivElement>(null);
+
+  useLeaveGuard(dirty);
 
   useEffect(() => {
-    listAgents().then(setAgents);
+    (async () => {
+      const list = await listAgents();
+      // an agent that was hidden can still be opened from an old link (to fix or delete its delivery)
+      if (agentId && !list.some((a) => a.id === agentId)) {
+        const hidden = await getAgent(agentId);
+        if (hidden) list.push(hidden);
+      }
+      setAgents(list);
+    })();
   }, []);
 
   useEffect(() => {
     deliveredAgents(iso(weekStart)).then(setDone);
   }, [weekStart, existingId]);
+
+  // who comes first: due today and not delivered yet, then the rest by their usual day, delivered ones last
+  const ordered = useMemo(() => {
+    if (!agents) return [];
+    const td = today().getDay();
+    const rank = (a: Agent) => (done?.has(a.id) ? 2 : isThisWeek && a.delivery_day === td ? 0 : 1);
+    return [...agents].sort(
+      (x, y) => rank(x) - rank(y) || (x.delivery_day ?? 9) - (y.delivery_day ?? 9) || x.name.localeCompare(y.name, 'he'),
+    );
+  }, [agents, done, isThisWeek]);
+
+  // no agent in the link: the first one in that order
+  useEffect(() => {
+    if (agentId || !done || ordered.length === 0) return;
+    const p = new URLSearchParams(params);
+    p.set('agent', String(ordered[0].id));
+    setParams(p, { replace: true });
+  }, [agentId, ordered, done]);
+
+  const agent = agents?.find((a) => a.id === agentId);
 
   useEffect(() => {
     if (!agentId || !agents) return;
@@ -65,16 +90,31 @@ export function Delivery() {
     };
   }, [agentId, weekStart, agents]);
 
-  function go(next: { agent?: number; week?: Date }) {
-    if (dirty && !window.confirm('יש שינויים שלא נשמרו. לעבור בלי לשמור?')) return;
+  useEffect(() => {
+    chipsRef.current?.querySelector('.agent-chip.on')?.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }, [agentId, ordered.length]);
+
+  async function go(next: { agent?: number; week?: Date }) {
+    if (next.agent === agentId && !next.week) return;
+    if (
+      dirty &&
+      !(await ask({ title: 'יש שינויים שלא נשמרו', text: 'לעבור בלי לשמור? הכמויות שהוקלדו יימחקו.', ok: 'לעבור בלי לשמור', cancel: 'להישאר', danger: true }))
+    )
+      return;
+    setDirty(false);
     const p = new URLSearchParams(params);
     if (next.agent) p.set('agent', String(next.agent));
     if (next.week) p.set('week', iso(next.week));
     setParams(p, { replace: true });
   }
 
-  function setQty(pid: number, qty: number) {
-    setItems((its) => its?.map((i) => (i.product_id === pid ? { ...i, qty_received: qty } : i)) ?? null);
+  function setQty(pid: number, n: number) {
+    setItems((its) => its?.map((i) => (i.product_id === pid ? { ...i, qty_received: n } : i)) ?? null);
+    setDirty(true);
+  }
+
+  function copyLastWeek() {
+    setItems((its) => its?.map((i) => ({ ...i, qty_received: i.prev_qty })) ?? null);
     setDirty(true);
   }
 
@@ -82,29 +122,38 @@ export function Delivery() {
     if (!items || !agent) return;
     setSaving(true);
     try {
-      await saveDelivery(agent.id, date, items);
+      await saveDelivery(agent.id, iso(weekStart), date, items);
       toast(`האספקה של ${agent.name} נשמרה`);
       setDirty(false);
-      back();
+      back({ force: true });
     } catch (e) {
       console.error(e);
-      toast('השמירה נכשלה');
+      if (String((e as Error)?.message).includes('date-outside-week')) toast('תאריך האספקה חייב להיות בתוך השבוע שנבחר', 'err');
+      else toast('השמירה נכשלה. נסה שוב.', 'err');
     }
     setSaving(false);
   }
 
   async function remove() {
     if (!existingId || !agent) return;
-    if (!window.confirm(`למחוק את האספקה של ${agent.name} בשבוע הזה?`)) return;
+    const ok = await ask({
+      title: `למחוק את האספקה של ${agent.name}?`,
+      text: 'כל הכמויות של השבוע הזה אצל הסוכן יימחקו, וגם ההחזרות שנרשמו עליהן.',
+      ok: 'מחיקה',
+      danger: true,
+    });
+    if (!ok) return;
     await deleteDelivery(existingId);
     toast('האספקה נמחקה');
-    back();
+    back({ force: true });
   }
 
   const total = (items ?? []).reduce((s, i) => s + i.qty_received * i.unit_cost, 0);
   const units = (items ?? []).reduce((s, i) => s + i.qty_received, 0);
+  const canCopy = !existingId && units === 0 && (items ?? []).some((i) => i.prev_qty > 0);
   const minDate = iso(weekStart);
   const maxDate = iso(addDays(weekStart, 6));
+  const todayDow = today().getDay();
 
   if (agents && agents.length === 0) {
     return (
@@ -137,10 +186,14 @@ export function Delivery() {
             min={minDate}
             max={maxDate}
             onChange={(e) => {
-              if (e.target.value) {
-                setDate(e.target.value);
-                setDirty(true);
+              const v = e.target.value;
+              if (!v) return;
+              if (v < minDate || v > maxDate) {
+                toast('אפשר לבחור רק יום בתוך השבוע שנבחר. לשבוע אחר – מחליפים שבוע למטה.', 'err');
+                return;
               }
+              setDate(v);
+              setDirty(true);
             }}
           />
         </label>
@@ -150,24 +203,31 @@ export function Delivery() {
         <WeekBar weekStart={weekStart} onChange={(w) => go({ week: w })} />
       </div>
 
-      <div className="agent-chips">
-        {(agents ?? []).map((a) => (
-          <button
-            key={a.id}
-            type="button"
-            className={`agent-chip${a.id === agentId ? ' on' : ''}`}
-            style={a.id === agentId ? { background: a.color ?? 'var(--primary)' } : undefined}
-            onClick={() => go({ agent: a.id })}
-          >
-            {a.id !== agentId && <span className="dot" style={{ background: a.color ?? 'var(--primary)' }} />}
-            {a.name}
-            {done?.has(a.id) && (
-              <span className="ok">
-                <Icon name="check" size={18} stroke={3} />
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="agent-chips" ref={chipsRef}>
+        {ordered.map((a) => {
+          const on = a.id === agentId;
+          const isDone = done?.has(a.id);
+          return (
+            <button
+              key={a.id}
+              type="button"
+              className={`agent-chip${on ? ' on' : ''}`}
+              style={on ? { background: a.color ?? 'var(--primary)' } : undefined}
+              aria-pressed={on}
+              onClick={() => go({ agent: a.id })}
+            >
+              {!on && <span className="dot" style={{ background: a.color ?? 'var(--primary)' }} />}
+              {a.name}
+              {isDone ? (
+                <span className="ok" aria-label="נרשם">
+                  <Icon name="check" size={18} stroke={3} />
+                </span>
+              ) : (
+                isThisWeek && a.delivery_day === todayDow && <span className="tag-today">היום</span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {items && items.length === 0 ? (
@@ -179,10 +239,17 @@ export function Delivery() {
         </div>
       ) : (
         <>
-          <div className="pad" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--ink2)', marginBottom: 10 }}>
+          <div className="pad list-top">
             <span>{existingId ? 'אספקה שכבר נרשמה · אפשר לתקן' : 'כמה הגיע מכל מוצר?'}</span>
-            <b>{units} יחידות</b>
+            <b>{qty(units)} יח׳</b>
           </div>
+          {canCopy && (
+            <div className="pad" style={{ marginBottom: 10 }}>
+              <button type="button" className="dashed-btn" onClick={copyLastWeek}>
+                <Icon name="refresh" size={18} /> למלא כמו בשבוע שעבר
+              </button>
+            </div>
+          )}
           <div className="items">
             {(items ?? []).map((i) => (
               <div key={i.product_id} className="item">
@@ -192,32 +259,33 @@ export function Delivery() {
                 <div className="info">
                   <b>{i.name}</b>
                   <span className="s">
-                    {shekelCents(i.unit_cost)} ליחידה{i.returnable ? '' : ' · ללא החזרה'}
+                    {shekelCents(i.unit_cost)} ליח׳{i.returnable ? '' : ' · ללא החזרה'}
+                    {i.prev_qty > 0 ? ` · שבוע שעבר: ${qty(i.prev_qty)}` : ''}
                   </span>
                   <div className="foot">
-                    <span className="line-total">{shekelCents(i.qty_received * i.unit_cost)}</span>
+                    <span className="line-total">{i.qty_received > 0 ? shekelCents(i.qty_received * i.unit_cost) : ''}</span>
                     <Stepper value={i.qty_received} onChange={(n) => setQty(i.product_id, n)} label={i.name} />
                   </div>
                 </div>
               </div>
             ))}
+            {existingId && (
+              <button type="button" className="danger-link end-link" onClick={remove}>
+                <Icon name="trash" size={18} /> מחיקת כל האספקה של השבוע
+              </button>
+            )}
           </div>
         </>
       )}
 
-      <div className="footer">
+      <div className="footer compact">
         <div className="sum">
-          <span>סה״כ לפי מחיר קנייה</span>
-          <b>{shekelCents(total)}</b>
+          <span>סה״כ קנייה</span>
+          <b>{shekelSmart(total)}</b>
         </div>
-        <button type="button" className="btn" onClick={save} disabled={saving || !items || (!existingId && units === 0)}>
+        <button type="button" className="btn" onClick={save} disabled={saving || !items || !agent || (!existingId && units === 0)}>
           {saving ? 'שומר…' : existingId ? 'שמירת השינויים' : 'שמירת האספקה'}
         </button>
-        {existingId && (
-          <button type="button" className="danger-link" onClick={remove}>
-            מחיקת האספקה
-          </button>
-        )}
       </div>
     </>
   );

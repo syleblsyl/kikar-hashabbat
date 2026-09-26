@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ask } from '../components/Dialog';
+import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
 import { toast } from '../components/Toast';
-import { getAgent, productsOfAgent, type Agent, type Product } from '../db/catalog';
+import { getAgent, productsOfAgent, unhideAgent, type Agent, type Product } from '../db/catalog';
 import { addPayment, agentLedger, balances, deletePayment, type LedgerEntry } from '../db/ops';
 import { DAY_NAMES, DAY_SHORT, fromIso, iso, startOfWeek, today } from '../lib/dates';
 import { weekInfo } from '../lib/hebrew';
-import { parseAmount, products as productsLabel, shekel, shekelCents } from '../lib/money';
+import { parseAmountStrict, products as productsLabel, shekelCents, shekelSmart } from '../lib/money';
 import { initialOf } from './Agents';
 import { useBack } from '../components/useBack';
 
@@ -18,26 +20,36 @@ export function waLink(phone: string) {
   return `https://wa.me/${intl}`;
 }
 
+function fmtDate(s: string) {
+  const d = fromIso(s);
+  return `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()}`;
+}
+
 export function AgentCard() {
   const { id } = useParams();
   const agentId = Number(id);
   const [params] = useSearchParams();
   const nav = useNavigate();
   const back = useBack();
-  const [agent, setAgent] = useState<Agent | null>(null);
+  const [agent, setAgent] = useState<Agent | null | undefined>(undefined);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [balance, setBalance] = useState(0);
   const [prods, setProds] = useState<Product[]>([]);
   const [tab, setTab] = useState<'ledger' | 'products'>('ledger');
+  const [payOpen, setPayOpen] = useState(!!params.get('pay'));
   const [date, setDate] = useState(iso(today()));
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState(PAY_METHODS[0]);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const [openPayment, setOpenPayment] = useState<string | null>(null);
   const payRef = useRef<HTMLElement>(null);
   const amountRef = useRef<HTMLInputElement>(null);
 
+  useLeaveGuard(payOpen && (amount.trim() !== '' || note.trim() !== ''));
+
   async function load() {
+    if (!Number.isFinite(agentId) || agentId <= 0) return setAgent(null);
     const [a, l, b, p] = await Promise.all([getAgent(agentId), agentLedger(agentId), balances(), productsOfAgent(agentId)]);
     setAgent(a);
     setLedger(l);
@@ -46,44 +58,84 @@ export function AgentCard() {
   }
 
   useEffect(() => {
-    load().then(() => {
-      if (params.get('pay')) {
-        setTimeout(() => {
-          payRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          amountRef.current?.focus();
-        }, 150);
-      }
-    });
+    load();
   }, [agentId]);
 
+  useEffect(() => {
+    if (!payOpen || !agent) return;
+    const t = setTimeout(() => {
+      payRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      amountRef.current?.focus();
+    }, 120);
+    return () => clearTimeout(t);
+  }, [payOpen, !!agent]);
+
+  const parsed = parseAmountStrict(amount);
+
   async function pay() {
-    const a = parseAmount(amount);
-    if (a <= 0) return toast('צריך לכתוב סכום');
+    if (parsed === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 1200 או 350.50', 'err');
+    if (parsed <= 0) {
+      amountRef.current?.focus();
+      return toast('צריך לכתוב סכום', 'err');
+    }
     setSaving(true);
-    await addPayment(agentId, date, a, method, note);
-    toast(`נרשם תשלום של ${shekel(a)} ל${agent?.name ?? 'סוכן'}`);
-    setAmount('');
-    setNote('');
-    await load();
+    try {
+      await addPayment(agentId, date, parsed, method, note);
+      toast(`נרשם תשלום של ${shekelSmart(parsed)} ל${agent?.name ?? 'סוכן'}`);
+      setAmount('');
+      setNote('');
+      setPayOpen(false);
+      await load();
+    } catch (e) {
+      console.error(e);
+      toast('השמירה נכשלה. נסה שוב.', 'err');
+    }
     setSaving(false);
   }
 
-  async function open(e: LedgerEntry) {
-    if (e.kind === 'delivery') nav(`/delivery?agent=${agentId}&week=${e.weekStart}`);
-    else if (e.kind === 'returns') nav(`/returns?agent=${agentId}&week=${e.weekStart}`);
-    else if (window.confirm(`למחוק את התשלום של ${shekel(-e.amount)} מ-${fromIso(e.date).toLocaleDateString('he-IL')}?`)) {
-      await deletePayment(e.id);
-      toast('התשלום נמחק');
-      load();
-    }
+  async function removePayment(e: LedgerEntry) {
+    const ok = await ask({
+      title: 'למחוק את התשלום?',
+      text: `${shekelSmart(-e.amount)} מ-${fmtDate(e.date)}${e.sub ? ` (${e.sub})` : ''}.\nהיתרה לסוכן תעלה בהתאם.`,
+      ok: 'מחיקת התשלום',
+      danger: true,
+    });
+    if (!ok) return;
+    await deletePayment(e.id);
+    toast('התשלום נמחק');
+    setOpenPayment(null);
+    load();
   }
 
-  if (!agent) return <header className="bar" />;
+  function open(e: LedgerEntry) {
+    if (e.kind === 'delivery') nav(`/delivery?agent=${agentId}&week=${e.weekStart}`);
+    else if (e.kind === 'returns') nav(`/returns?agent=${agentId}&week=${e.weekStart}`);
+    else setOpenPayment((k) => (k === e.key ? null : e.key));
+  }
+
+  if (agent === undefined) return <header className="bar" />;
+  if (agent === null) {
+    return (
+      <>
+        <header className="bar">
+          <button type="button" className="icon-btn" aria-label="חזרה" onClick={() => back()}>
+            <Icon name="back" />
+          </button>
+          <h1 className="page-title">כרטיס סוכן</h1>
+        </header>
+        <div className="card empty-card">
+          <p>הסוכן הזה לא נמצא.</p>
+          <Link to="/agents" className="btn small" style={{ width: 'auto', padding: '0 20px' }}>לרשימת הסוכנים</Link>
+        </div>
+      </>
+    );
+  }
 
   const color = agent.color ?? 'var(--primary)';
-  const after = balance - parseAmount(amount);
-  const currentWeek = iso(startOfWeek(today()));
-  const pending = ledger.filter((e) => e.pendingReturns && (e.weekStart ?? '') < currentWeek);
+  const after = balance - (parsed ?? 0);
+  const pending = ledger.filter((e) => e.pendingReturns);
+  const pendingPast = pending.filter((e) => (e.weekStart ?? '') < iso(startOfWeek(today())));
+  const pendingSum = pending.reduce((s, e) => s + e.amount, 0);
 
   return (
     <>
@@ -96,6 +148,27 @@ export function AgentCard() {
           <Icon name="edit" />
         </Link>
       </header>
+
+      {!agent.active && (
+        <div className="banner gold" style={{ margin: '0 16px 8px' }}>
+          <span className="txt">
+            <b>הסוכן מוסתר</b>
+            <span>לא מופיע ברשימות. היתרה וההיסטוריה נשמרו.</span>
+          </span>
+          <button
+            type="button"
+            className="btn small"
+            style={{ width: 'auto', padding: '0 14px' }}
+            onClick={async () => {
+              await unhideAgent(agentId);
+              toast(`${agent.name} חזר לרשימת הסוכנים`);
+              load();
+            }}
+          >
+            החזרה
+          </button>
+        </div>
+      )}
 
       <section className="agent-hero" style={{ background: color }}>
         <div className="who">
@@ -125,23 +198,88 @@ export function AgentCard() {
 
       <section className="card balance">
         <span className="k">{balance < -0.004 ? 'הסוכן חייב לך' : 'יתרה לתשלום לסוכן'}</span>
-        <span className={`v ${balance > 0.004 ? 'owe' : balance < -0.004 ? 'credit' : 'zero'}`}>{shekel(Math.abs(balance))}</span>
-        {pending.map((p) => (
-          <Link key={p.key} to={`/returns?agent=${agentId}&week=${p.weekStart}`} className="banner gold" style={{ margin: '8px 0 0', padding: '10px 12px' }}>
-            <span className="ic" style={{ width: 34, height: 34 }}><Icon name="undo" size={18} /></span>
+        <span className={`v ${balance > 0.004 ? 'owe' : balance < -0.004 ? 'credit' : 'zero'}`}>{shekelSmart(Math.abs(balance))}</span>
+        {pending.length > 0 && balance > 0.004 && (
+          <span className="hint">
+            כולל {shekelSmart(pendingSum)} מאספקות שעוד לא נרשמו להן החזרות – אחרי הרישום היתרה תרד.
+          </span>
+        )}
+        {pendingPast.map((p) => (
+          <Link key={p.key} to={`/returns?agent=${agentId}&week=${p.weekStart}`} className="banner gold slim">
+            <span className="ic"><Icon name="undo" size={18} /></span>
             <span className="txt">
-              <b style={{ fontSize: 15 }}>החזרות {p.weekStart ? weekInfo(fromIso(p.weekStart)).title : ''}</b>
-              <span>עוד לא נרשמו · היתרה תרד אחרי הרישום</span>
+              <b>החזרות · {p.weekStart ? weekInfo(fromIso(p.weekStart)).title : ''}</b>
+              <span>עוד לא נרשמו</span>
             </span>
             <span className="go">לרישום</span>
           </Link>
         ))}
+        {!payOpen && (
+          <button type="button" className="btn small" style={{ marginTop: 8 }} onClick={() => setPayOpen(true)}>
+            <Icon name="wallet" size={20} /> רישום תשלום לסוכן
+          </button>
+        )}
       </section>
 
+      {payOpen && (
+        <section ref={payRef} className="card box pay-box">
+          <div className="pay-head">
+            <h2>תשלום ל{agent.name}</h2>
+            <button type="button" className="x-btn" aria-label="סגירה" onClick={() => setPayOpen(false)}>
+              <Icon name="x" size={20} />
+            </button>
+          </div>
+          <div className="two">
+            <label className="date-chip" style={{ height: 52, fontSize: 17, justifyContent: 'center' }}>
+              <Icon name="calendar" size={20} />
+              {fmtDate(date)}
+              <input type="date" aria-label="תאריך התשלום" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
+            </label>
+            <div className={`money-in${parsed === null ? ' bad' : ''}`}>
+              <input
+                ref={amountRef}
+                inputMode="decimal"
+                enterKeyHint="done"
+                aria-label="סכום התשלום"
+                aria-invalid={parsed === null}
+                placeholder="סכום"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && pay()}
+              />
+              <span>₪</span>
+            </div>
+          </div>
+          {balance > 0.004 && (
+            <div className="chips">
+              <button type="button" className="chip" onClick={() => setAmount(String(Math.round(balance * 100) / 100))}>
+                כל היתרה · {shekelSmart(balance)}
+              </button>
+            </div>
+          )}
+          <div className="chips" role="radiogroup" aria-label="אמצעי תשלום">
+            {PAY_METHODS.map((m) => (
+              <button key={m} type="button" role="radio" aria-checked={method === m} className={`chip${method === m ? ' on' : ''}`} onClick={() => setMethod(m)}>
+                {m}
+              </button>
+            ))}
+          </div>
+          <input className="input" style={{ fontSize: 16, fontWeight: 600, height: 48 }} placeholder="הערה (לא חובה)" aria-label="הערה" value={note} onChange={(e) => setNote(e.target.value)} />
+          {parsed === null && <div className="field-err">כותבים רק מספר, למשל 1200 או 350.50</div>}
+          {(parsed ?? 0) > 0 && (
+            <div className="after-row">
+              <span>{after < -0.004 ? 'אחרי התשלום הסוכן יהיה חייב לך' : 'יתרה אחרי התשלום'}</span>
+              <b>{shekelSmart(Math.abs(after))}</b>
+            </div>
+          )}
+          <button type="button" className="btn" onClick={pay} disabled={saving}>{saving ? 'שומר…' : 'שמירת התשלום'}</button>
+        </section>
+      )}
+
       <div className="stack" style={{ margin: '12px 16px 0' }}>
-        <div className="segment">
-          <button type="button" className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>תנועות</button>
-          <button type="button" className={tab === 'products' ? 'on' : ''} onClick={() => setTab('products')}>מוצרים ({prods.length})</button>
+        <div className="segment" role="tablist">
+          <button type="button" role="tab" aria-selected={tab === 'ledger'} className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>תנועות</button>
+          <button type="button" role="tab" aria-selected={tab === 'products'} className={tab === 'products' ? 'on' : ''} onClick={() => setTab('products')}>מוצרים ({prods.length})</button>
         </div>
       </div>
 
@@ -150,26 +288,39 @@ export function AgentCard() {
           {ledger.length === 0 && <p className="hint" style={{ padding: '14px 0' }}>עוד אין תנועות. אחרי קבלת סחורה ותשלומים הם יופיעו כאן.</p>}
           {ledger.map((e) => {
             const d = fromIso(e.date);
+            const noCredit = e.kind === 'returns' && Math.abs(e.amount) < 0.004;
             return (
-              <button key={e.key} type="button" className="entry" onClick={() => open(e)}>
-                <span className="when">
-                  <small>{DAY_SHORT[d.getDay()]}</small>
-                  <b>{d.getDate()}.{d.getMonth() + 1}</b>
-                </span>
-                <span className="what">
-                  <b>{e.title}</b>
-                  <span>
-                    {e.kind === 'payment' ? e.sub || 'תשלום' : `${e.weekStart ? weekInfo(fromIso(e.weekStart)).title : ''} · ${e.sub.split(' · ').pop()}`}
-                    {e.pendingReturns ? ' · ממתין להחזרות' : ''}
+              <div key={e.key} className="entry-wrap">
+                <button type="button" className="entry" onClick={() => open(e)} aria-expanded={e.kind === 'payment' ? openPayment === e.key : undefined}>
+                  <span className="when">
+                    <small>{DAY_SHORT[d.getDay()]}</small>
+                    <b>{d.getDate()}.{d.getMonth() + 1}</b>
                   </span>
-                </span>
-                <span className={`amt${e.amount < 0 ? ' minus' : ''}`}>
-                  {e.amount < 0 ? '−' : '+'}
-                  {shekel(Math.abs(e.amount))}
-                </span>
-              </button>
+                  <span className="what">
+                    <b>{e.title}</b>
+                    <span>
+                      {e.kind === 'payment' ? e.sub || 'תשלום' : `${e.weekStart ? weekInfo(fromIso(e.weekStart)).title : ''}${e.kind === 'delivery' ? ` · ${e.sub.split(' · ').pop()}` : ''}`}
+                      {e.pendingReturns ? ' · ממתין להחזרות' : ''}
+                    </span>
+                  </span>
+                  {noCredit ? (
+                    <span className="amt muted">ללא זיכוי</span>
+                  ) : (
+                    <span className={`amt${e.amount < 0 ? ' minus' : ''}`}>{shekelSmart(e.amount, { signed: true }).replace('-', '−')}</span>
+                  )}
+                </button>
+                {e.kind === 'payment' && openPayment === e.key && (
+                  <div className="entry-more">
+                    <span>תשלום {shekelSmart(-e.amount)} · {fmtDate(e.date)}</span>
+                    <button type="button" className="danger-link" onClick={() => removePayment(e)}>
+                      <Icon name="trash" size={18} /> מחיקה
+                    </button>
+                  </div>
+                )}
+              </div>
             );
           })}
+          {ledger.length > 0 && <p className="hint ledger-key">+ סחורה שהגיעה (מגדיל את החוב) · − החזרות ותשלומים (מקטינים)</p>}
         </section>
       ) : (
         <section className="card" style={{ margin: '10px 16px 0', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -179,42 +330,14 @@ export function AgentCard() {
                 <b>{p.name}</b>
                 <span>{p.returnable ? 'ניתן להחזרה' : 'ללא החזרה'}</span>
               </span>
-              <span className="amt" style={{ fontSize: 15 }}>{shekelCents(p.agents.find((a) => a.agent_id === agentId)?.cost_price ?? 0)}</span>
+              <span className="amt nowrap" style={{ fontSize: 15 }}>{shekelCents(p.agents.find((a) => a.agent_id === agentId)?.cost_price ?? 0)}</span>
             </Link>
           ))}
-          <Link to={`/product/new?agent=${agentId}`} className="dashed-btn" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '6px 0' }}>
-            + מוצר חדש לסוכן
+          <Link to={`/product/new?agent=${agentId}`} className="dashed-btn" style={{ margin: '6px 0' }}>
+            <Icon name="plus" size={18} /> מוצר חדש לסוכן
           </Link>
         </section>
       )}
-
-      <section ref={payRef} className="card box" style={{ margin: '12px 16px 0', padding: 16, gap: 12 }}>
-        <h2 style={{ fontSize: 19, fontWeight: 800 }}>רישום תשלום לסוכן</h2>
-        <div className="two">
-          <label className="date-chip" style={{ height: 52, fontSize: 17, justifyContent: 'center' }}>
-            <Icon name="calendar" size={20} />
-            {fromIso(date).getDate()}.{fromIso(date).getMonth() + 1}.{fromIso(date).getFullYear()}
-            <input type="date" aria-label="תאריך התשלום" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
-          </label>
-          <div className="money-in">
-            <input ref={amountRef} inputMode="decimal" aria-label="סכום התשלום" placeholder="סכום" value={amount} onChange={(e) => setAmount(e.target.value)} />
-            <span>₪</span>
-          </div>
-        </div>
-        <div className="chips">
-          {PAY_METHODS.map((m) => (
-            <button key={m} type="button" className={`chip${method === m ? ' on' : ''}`} onClick={() => setMethod(m)}>{m}</button>
-          ))}
-        </div>
-        <input className="input" style={{ fontSize: 16, fontWeight: 600, height: 46 }} placeholder="הערה (לא חובה)" aria-label="הערה" value={note} onChange={(e) => setNote(e.target.value)} />
-        {parseAmount(amount) > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px solid var(--line-soft)', paddingTop: 10 }}>
-            <span style={{ color: 'var(--ink2)' }}>{after < -0.004 ? 'אחרי התשלום הסוכן יהיה חייב לך' : 'יתרה אחרי התשלום'}</span>
-            <b style={{ fontSize: 20 }}>{shekel(Math.abs(after))}</b>
-          </div>
-        )}
-        <button type="button" className="btn" onClick={pay} disabled={saving}>{saving ? 'שומר…' : 'שמירת התשלום'}</button>
-      </section>
       <div style={{ height: 24 }} />
     </>
   );

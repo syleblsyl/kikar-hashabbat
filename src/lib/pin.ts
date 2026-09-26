@@ -26,3 +26,28 @@ export async function checkPin(pin: string): Promise<boolean> {
   if (!salt || !hash) return false;
   return (await sha256(salt + pin)) === hash;
 }
+
+/* ---------- wrong-code lockout ---------- */
+
+const FREE_TRIES = 5;
+
+/** Milliseconds left before another try is allowed (0 = may try now). */
+export async function pinWaitLeft(): Promise<number> {
+  const until = Number((await getSetting('pin_wait_until')) ?? 0);
+  return Math.max(0, until - Date.now());
+}
+
+/** Records a wrong code. After 5 wrong tries each further one waits longer: 30s, 1m, 2m… up to 15 minutes. */
+export async function pinFailed(): Promise<number> {
+  const fails = Number((await getSetting('pin_fails')) ?? 0) + 1;
+  await setSetting('pin_fails', String(fails));
+  if (fails < FREE_TRIES) return 0;
+  const wait = Math.min(15 * 60_000, 30_000 * 2 ** (fails - FREE_TRIES));
+  await setSetting('pin_wait_until', String(Date.now() + wait));
+  return wait;
+}
+
+export async function pinSucceeded() {
+  await setSetting('pin_fails', '0');
+  await setSetting('pin_wait_until', '0');
+}

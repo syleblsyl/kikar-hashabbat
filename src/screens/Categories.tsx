@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { ask, askText } from '../components/Dialog';
 import { Icon } from '../components/Icon';
+import { toast } from '../components/Toast';
 import { SubBar } from '../components/SubBar';
 import { products } from '../lib/money';
 import { addCategory, listCategories, removeCategory, renameCategory, type Category } from '../db/catalog';
@@ -15,21 +17,28 @@ export function Categories() {
 
   async function add() {
     if (!name.trim()) return;
+    if (cats.some((c) => c.name.trim() === name.trim())) return toast(`הקטגוריה "${name.trim()}" כבר קיימת`, 'err');
     await addCategory(name);
     setName('');
     load();
   }
 
   async function rename(c: Category) {
-    const n = window.prompt('שם חדש לקטגוריה', c.name);
-    if (n && n.trim()) {
+    const n = await askText({ title: 'שם חדש לקטגוריה', value: c.name });
+    if (n && n !== c.name) {
       await renameCategory(c.id, n);
       load();
     }
   }
 
   async function remove(c: Category) {
-    if (!window.confirm(`למחוק את הקטגוריה "${c.name}"? המוצרים שבה יישארו בלי קטגוריה.`)) return;
+    const ok = await ask({
+      title: `למחוק את הקטגוריה "${c.name}"?`,
+      text: c.count ? `${products(c.count)} יישארו בלי קטגוריה (המוצרים עצמם לא נמחקים).` : undefined,
+      ok: 'מחיקה',
+      danger: true,
+    });
+    if (!ok) return;
     await removeCategory(c.id);
     load();
   }
@@ -45,7 +54,7 @@ export function Categories() {
               <span className="dot" style={{ background: c.color ?? '#F1EDE2', width: 22, height: 22, borderRadius: 6, border: '1px solid var(--line)' }} />
               <span className="name">{c.name} <span className="hint">· {products(c.count ?? 0)}</span></span>
               <button type="button" className="x-btn" aria-label={`שינוי שם ${c.name}`} onClick={() => rename(c)}><Icon name="edit" size={18} /></button>
-              <button type="button" className="x-btn" aria-label={`מחיקת ${c.name}`} onClick={() => remove(c)}><Icon name="x" size={18} /></button>
+              <button type="button" className="x-btn" aria-label={`מחיקת ${c.name}`} onClick={() => remove(c)}><Icon name="trash" size={18} /></button>
             </div>
           ))}
         </div>
