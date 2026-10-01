@@ -240,7 +240,7 @@ export function Income() {
             <b>{shekelSmart(monthTotal)}</b>
           </div>
           <div>
-            <span>{ms.mode === 'paid' ? 'פחות: שולם לסוכנים' : 'פחות: חשבוניות נטו'}</span>
+            <span>{ms.mode === 'paid' ? 'פחות: שולם לסוכנים' : 'פחות: חיובי סוכנים (חשבוניות)'}</span>
             <b className="minus">{shekelSmart(-(ms.mode === 'paid' ? ms.paid : ms.goodsCost)).replace('-', '−')}</b>
           </div>
           <div>
@@ -248,7 +248,7 @@ export function Income() {
             <b className="minus">{shekelSmart(-ms.expenses).replace('-', '−')}</b>
           </div>
           <div className="total">
-            <span>רווח נקי החודש</span>
+            <span>נשאר בקופה החודש</span>
             <b>{shekelSmart(monthTotal - (ms.mode === 'paid' ? ms.paid : ms.goodsCost) - ms.expenses)}</b>
           </div>
         </section>

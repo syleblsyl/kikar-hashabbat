@@ -5,7 +5,6 @@ import { Icon } from '../components/Icon';
 import { UpdatePanel } from '../components/UpdatePanel';
 import type { UpdateInfo } from '../lib/updater';
 import { currentVersion, type AppVersion } from '../lib/version';
-import { getNetMode, setSetting, type NetMode } from '../db/repo';
 
 type Props = {
   update: UpdateInfo | null;
@@ -17,16 +16,7 @@ type Props = {
 };
 
 export function Settings({ update, setUpdate, lockOn, onLockSetting, onChangePin, onLock }: Props) {
-  const [netMode, setNetModeState] = useState<NetMode | null>(null);
 
-  useEffect(() => {
-    getNetMode().then(setNetModeState);
-  }, []);
-
-  async function changeNetMode(m: NetMode) {
-    await setSetting('net_mode', m);
-    setNetModeState(m);
-  }
   const [ver, setVer] = useState<AppVersion | null>(null);
   const native = Capacitor.isNativePlatform();
 
@@ -51,25 +41,6 @@ export function Settings({ update, setUpdate, lockOn, onLockSetting, onChangePin
         </div>
 
         <UpdatePanel update={update} setUpdate={setUpdate} />
-      </section>
-
-      <section className="card set-group">
-        <h2>חישוב הרווח הנקי</h2>
-        <div className="set-row" style={{ borderTop: 0, flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-          <div className="segment wrap" role="radiogroup" aria-label="חישוב הרווח הנקי">
-            <button type="button" role="radio" aria-checked={netMode === 'paid'} className={netMode === 'paid' ? 'on' : ''} onClick={() => changeNetMode('paid')}>
-              לפי תשלומים לסוכנים
-            </button>
-            <button type="button" role="radio" aria-checked={netMode === 'goods'} className={netMode === 'goods' ? 'on' : ''} onClick={() => changeNetMode('goods')}>
-              לפי סחורה שהתקבלה
-            </button>
-          </div>
-          <span className="hint">
-            {netMode === 'goods'
-              ? 'רווח נקי = הכנסות − סחורה שנשארה (אחרי החזרות) − הוצאות. התשלומים לסוכנים לא מורדים שוב.'
-              : 'רווח נקי = הכנסות − מה ששילמת לסוכנים − הוצאות. כל תשלום לסוכן יורד מהרווח בתאריך התשלום.'}
-          </span>
-        </div>
       </section>
 
       <section className="card set-group">

@@ -17,8 +17,9 @@ export async function setSetting(key: string, value: string) {
  */
 export type NetMode = 'paid' | 'goods';
 
+/** Since 1.0.12 always 'goods' (Yosel: every agent charge is minus, paid or not). Kept as a value for the code paths. */
 export async function getNetMode(): Promise<NetMode> {
-  return (await getSetting('net_mode')) === 'goods' ? 'goods' : 'paid';
+  return 'goods';
 }
 
 export type WeekSummary = {

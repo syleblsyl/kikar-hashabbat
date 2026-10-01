@@ -63,16 +63,16 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
       { k: 'שולם לסוכנים החודש', v: r.paid },
       { k: 'הוצאות (קבועות ופועלים)', v: r.expenses },
       ...r.byType.map((t) => ({ k: `   ${t.name}`, v: t.total })),
-      { k: r.mode === 'paid' ? 'רווח נקי (הכנסות − תשלומים לסוכנים − הוצאות)' : 'רווח נקי (הכנסות − חשבוניות נטו − הוצאות)', v: r.net },
+      { k: 'נשאר בקופה (הכנסות − חיובי סוכנים − הוצאות)', v: r.net },
     ],
   );
   sum.eachRow((row, n) => {
-    if (n > 3 && String(row.getCell(1).value).startsWith('רווח נקי')) row.font = { bold: true, size: 13 };
+    if (n > 3 && String(row.getCell(1).value).startsWith('נשאר בקופה')) row.font = { bold: true, size: 13 };
   });
   sum.addRow({});
   const wh = sum.addRow({ k: 'לפי שבועות' });
   wh.font = { bold: true, size: 13 };
-  const hdr = sum.addRow(['שבוע', 'הכנסות', r.mode === 'paid' ? 'שולם לסוכנים' : 'חשבוניות נטו', 'הוצאות', 'רווח נקי']);
+  const hdr = sum.addRow(['שבוע', 'הכנסות', r.mode === 'paid' ? 'שולם לסוכנים' : 'חיובי סוכנים', 'הוצאות', 'נשאר בקופה']);
   hdr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   hdr.eachCell((c) => (c.fill = HEAD_FILL));
   for (const w of r.weeks) {

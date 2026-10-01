@@ -94,10 +94,10 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
 
       <section className="hero">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <div className="k">{isCurrent ? 'רווח נקי החודש' : 'רווח נקי בחודש'}</div>
+          <div className="k">{isCurrent ? 'נשאר בקופה החודש' : 'נשאר בקופה בחודש'}</div>
           <div className="big">{sum ? shekel(sum.net) : '…'}</div>
           <div className="note">
-            {sum?.mode === 'goods' ? 'הכנסות ברוטו פחות חשבוניות נטו והוצאות' : 'הכנסות ברוטו פחות תשלומים לסוכנים והוצאות'}
+            {sum?.mode === 'goods' ? 'הכנסות ברוטו פחות חיובי הסוכנים והוצאות · לא משנה אם שולם' : 'הכנסות ברוטו פחות תשלומים לסוכנים והוצאות'}
           </div>
         </div>
         <div className="minis">
@@ -107,7 +107,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
           </Link>
           {sum?.mode === 'goods' ? (
             <Link to={`/invoices?month=${ymKey(ym)}`} className="mini" style={{ color: '#fff' }}>
-              <span>חשבוניות נטו</span>
+              <span>חיובי סוכנים</span>
               <b>{shekel(sum.goodsCost)}</b>
             </Link>
           ) : (
