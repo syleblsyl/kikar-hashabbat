@@ -108,7 +108,7 @@ export function Home({ update, weekStart, setWeekStart, onLock, lockOn, backupDu
         </div>
         <div className="minis">
           <Link to={`/income?date=${incomeDate}`} className="mini" style={{ color: '#fff' }}>
-            <span>הכנסות</span>
+            <span>הכנסות ברוטו</span>
             <b>{sum ? shekel(sum.income) : '…'}</b>
           </Link>
           {sum?.mode === 'paid' ? (
@@ -193,7 +193,7 @@ export function Home({ update, weekStart, setWeekStart, onLock, lockOn, backupDu
                 <b>{a.name}</b>
                 <span>
                   {a.delivered && a.deliveryDate
-                    ? `הגיע ${shortDate(fromIso(a.deliveryDate))} · ${products(a.lines)}`
+                    ? `הגיע ${shortDate(fromIso(a.deliveryDate))} · ${a.manual ? 'לפי סכום' : products(a.lines)}`
                     : a.deliveryDay != null
                       ? isCurrent && a.deliveryDay === now.getDay()
                         ? 'מגיע היום'

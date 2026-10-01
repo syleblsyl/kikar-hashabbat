@@ -131,6 +131,12 @@ export function StatementDoc({ agent, st, details }: { agent: Agent; st: Stateme
                 {r.kind === 'payment' && r.method ? ` · ${r.method}` : ''}
               </b>
               {r.kind === 'payment' && r.note && <small>{r.note}</small>}
+              {r.kind !== 'payment' && r.manual && (
+                <small>
+                  {r.kind === 'delivery' ? 'סכום כולל, בלי פירוט מוצרים' : 'זיכוי לפי סכום'}
+                  {r.kind === 'delivery' && r.note ? ` · ${r.note}` : ''}
+                </small>
+              )}
               {r.pendingReturns && <small className="warn">החזרות עוד לא נרשמו</small>}
               {details && <RowLines r={r} />}
             </span>

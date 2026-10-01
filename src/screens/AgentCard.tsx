@@ -314,7 +314,15 @@ export function AgentCard() {
                   <span className="what">
                     <b>{e.title}</b>
                     <span>
-                      {e.kind === 'payment' ? e.sub || 'תשלום' : `${e.weekStart ? weekInfo(fromIso(e.weekStart)).title : ''}${e.kind === 'delivery' ? ` · ${e.sub.split(' · ').pop()}` : ''}`}
+                      {e.kind === 'payment'
+                        ? e.sub || 'תשלום'
+                        : `${e.weekStart ? weekInfo(fromIso(e.weekStart)).title : ''}${
+                            e.kind === 'delivery'
+                              ? ` · ${e.manual ? `לפי סכום${e.note ? ` · ${e.note}` : ''}` : e.sub.split(' · ').pop()}`
+                              : e.manual
+                                ? ' · זיכוי לפי סכום'
+                                : ''
+                          }`}
                       {e.pendingReturns ? ' · ממתין להחזרות' : ''}
                     </span>
                   </span>

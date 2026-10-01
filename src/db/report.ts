@@ -23,7 +23,8 @@ export type MonthReport = {
   products: { id: number; name: string; received: number; returned: number; sold: number; cost: number }[];
   daily: { date: string; amounts: Record<string, number>; total: number }[];
   methods: string[];
-  deliveryRows: { date: string; weekStart: string; agent: string; product: string; received: number; returned: number; unitCost: number; returnable: number; returnsDone: number }[];
+  /** product lines, plus one row for every delivery or credit recorded as a sum (no products) */
+  deliveryRows: { date: string; weekStart: string; agent: string; product: string; received: number; returned: number; unitCost: number; returnable: number; returnsDone: number; net: number; sum: boolean }[];
   expenseRows: { date: string; type: string; amount: number; note: string }[];
   paymentRows: { date: string; agent: string; amount: number; method: string; note: string }[];
   openReturns: number;
@@ -68,28 +69,55 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
       ORDER BY d.delivery_date, a.name, p.name`,
     [from, to],
   );
+  // money per delivery (a delivery or its returns can be one sum without products)
+  const totals = await query<{
+    id: number;
+    date: string;
+    week_start: string;
+    agent_id: number;
+    agent: string;
+    color: string | null;
+    received: number;
+    credit: number;
+    returns_done: number;
+    returnable_lines: number;
+    manual_amount: number | null;
+    manual_credit: number | null;
+    note: string | null;
+  }>(
+    `SELECT t.id, t.delivery_date AS date, t.week_start, t.agent_id, a.name AS agent, a.color, t.received, t.credit,
+            t.returns_done, t.returnable_lines, t.manual_amount, t.manual_credit, t.note
+       FROM delivery_totals t JOIN agents a ON a.id = t.agent_id
+      WHERE t.delivery_date BETWEEN ? AND ?
+      ORDER BY t.delivery_date, a.name`,
+    [from, to],
+  );
   let received = 0;
   let credit = 0;
   const agentMap = new Map<number, MonthReport['agents'][number]>();
   const prodMap = new Map<number, MonthReport['products'][number]>();
-  const openDeliveries = new Set<string>();
-  for (const l of lines) {
-    const rec = num(l.qty_received) * num(l.unit_cost);
-    const ret = num(l.qty_returned) * num(l.unit_cost);
+  let openReturns = 0;
+  for (const t of totals) {
+    const rec = num(t.received);
+    const ret = num(t.credit);
     received += rec;
     credit += ret;
-    const a = agentMap.get(l.agent_id) ?? { id: l.agent_id, name: l.agent, color: l.color, received: 0, returned: 0, net: 0, paid: 0 };
+    const a = agentMap.get(t.agent_id) ?? { id: t.agent_id, name: t.agent, color: t.color, received: 0, returned: 0, net: 0, paid: 0 };
     a.received += rec;
     a.returned += ret;
     a.net += rec - ret;
-    agentMap.set(l.agent_id, a);
+    agentMap.set(t.agent_id, a);
+    if (!t.returns_done && num(t.returnable_lines) > 0 && rec > 0) openReturns++;
+  }
+  for (const l of lines) {
+    const rec = num(l.qty_received) * num(l.unit_cost);
+    const ret = num(l.qty_returned) * num(l.unit_cost);
     const p = prodMap.get(l.product_id) ?? { id: l.product_id, name: l.product, received: 0, returned: 0, sold: 0, cost: 0 };
     p.received += num(l.qty_received);
     p.returned += num(l.qty_returned);
     p.sold += num(l.qty_received) - num(l.qty_returned);
     p.cost += rec - ret;
     prodMap.set(l.product_id, p);
-    if (!l.returns_done && l.returnable) openDeliveries.add(`${l.agent_id}-${l.week_start}`);
   }
 
   const payRows = await query<{ date: string; agent_id: number; agent: string; color: string | null; amount: number; method: string | null; note: string | null }>(
@@ -123,7 +151,7 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
     const wf = iso(ws) < from ? from : iso(ws);
     const wt = iso(addDays(ws, 6)) > to ? to : iso(addDays(ws, 6));
     const inc = daily.filter((d) => d.date >= wf && d.date <= wt).reduce((s, d) => s + d.total, 0);
-    const goods = lines.filter((l) => l.date >= wf && l.date <= wt).reduce((s, l) => s + (num(l.qty_received) - num(l.qty_returned)) * num(l.unit_cost), 0);
+    const goods = totals.filter((t) => t.date >= wf && t.date <= wt).reduce((s, t) => s + num(t.received) - num(t.credit), 0);
     const ex = exp.filter((e) => e.date >= wf && e.date <= wt).reduce((s, e) => s + num(e.amount), 0);
     const pd = payRows.filter((p) => p.date >= wf && p.date <= wt).reduce((s, p) => s + num(p.amount), 0);
     weeks.push({ weekStart: iso(ws), title: weekInfo(ws).title, from: wf, to: wt, income: inc, goods, paid: pd, expenses: ex, net: inc - (mode === 'paid' ? pd : goods) - ex });
@@ -151,19 +179,53 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
     products: [...prodMap.values()].sort((a, b) => b.sold - a.sold),
     daily,
     methods,
-    deliveryRows: lines.map((l) => ({
-      date: l.date,
-      weekStart: l.week_start,
-      agent: l.agent,
-      product: l.product,
-      received: num(l.qty_received),
-      returned: num(l.qty_returned),
-      unitCost: num(l.unit_cost),
-      returnable: num(l.returnable),
-      returnsDone: num(l.returns_done),
-    })),
+    deliveryRows: [
+      ...lines.map((l) => ({
+        date: l.date,
+        weekStart: l.week_start,
+        agent: l.agent,
+        product: l.product,
+        received: num(l.qty_received),
+        returned: num(l.qty_returned),
+        unitCost: num(l.unit_cost),
+        returnable: num(l.returnable),
+        returnsDone: num(l.returns_done),
+        net: (num(l.qty_received) - num(l.qty_returned)) * num(l.unit_cost),
+        sum: false,
+      })),
+      ...totals
+        .filter((t) => t.manual_amount != null)
+        .map((t) => ({
+          date: t.date,
+          weekStart: t.week_start,
+          agent: t.agent,
+          product: `סחורה לפי סכום${t.note ? ` (${t.note})` : ''}`,
+          received: 0,
+          returned: 0,
+          unitCost: 0,
+          returnable: num(t.returnable_lines) > 0 ? 1 : 0,
+          returnsDone: num(t.returns_done),
+          net: num(t.received),
+          sum: true,
+        })),
+      ...totals
+        .filter((t) => t.manual_credit != null && num(t.credit) > 0)
+        .map((t) => ({
+          date: t.date,
+          weekStart: t.week_start,
+          agent: t.agent,
+          product: 'זיכוי החזרות לפי סכום',
+          received: 0,
+          returned: 0,
+          unitCost: 0,
+          returnable: 1,
+          returnsDone: 1,
+          net: -num(t.credit),
+          sum: true,
+        })),
+    ].sort((a, b) => (a.date === b.date ? a.agent.localeCompare(b.agent, 'he') : a.date < b.date ? -1 : 1)),
     expenseRows: exp.map((e) => ({ date: e.date, type: e.type ?? 'ללא סוג', amount: num(e.amount), note: e.note ?? '' })),
     paymentRows: payRows.map((p) => ({ date: p.date, agent: p.agent, amount: num(p.amount), method: p.method ?? '', note: p.note ?? '' })),
-    openReturns: openDeliveries.size,
+    openReturns,
   };
 }

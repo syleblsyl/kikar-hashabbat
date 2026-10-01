@@ -128,4 +128,22 @@ export const MIGRATIONS: string[] = [
 
   INSERT INTO payment_methods (name, sort) VALUES ('מזומן', 1), ('אשראי', 2), ('אחר', 3);
   `,
+
+  // v2 — a delivery or its returns can be recorded as one sum instead of per product
+  `
+  ALTER TABLE deliveries ADD COLUMN manual_amount REAL;
+  ALTER TABLE deliveries ADD COLUMN manual_credit REAL;
+  ALTER TABLE deliveries ADD COLUMN manual_returnable INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE deliveries ADD COLUMN note TEXT;
+
+  CREATE VIEW IF NOT EXISTS delivery_totals AS
+  SELECT d.id, d.agent_id, d.week_start, d.delivery_date, d.returns_done, d.returns_date,
+         d.manual_amount, d.manual_credit, d.manual_returnable, d.note,
+         COALESCE(d.manual_amount, (SELECT SUM(l.qty_received * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id), 0) AS received,
+         COALESCE(d.manual_credit, (SELECT SUM(l.qty_returned * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id), 0) AS credit,
+         (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.qty_received > 0) AS lines,
+         CASE WHEN d.manual_amount IS NOT NULL THEN d.manual_returnable
+              ELSE (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.returnable = 1 AND l.qty_received > 0) END AS returnable_lines
+    FROM deliveries d;
+  `,
 ];

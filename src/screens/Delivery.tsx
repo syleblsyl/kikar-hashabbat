@@ -8,9 +8,20 @@ import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
 import { WeekBar } from '../components/WeekBar';
 import { getAgent, listAgents, type Agent } from '../db/catalog';
-import { deleteDelivery, deliveredAgents, deliveryItems, getDelivery, saveDelivery, type DeliveryItem } from '../db/ops';
+import {
+  balanceOf,
+  deleteDelivery,
+  deliveredAgents,
+  deliveryItems,
+  getDelivery,
+  lastDeliveryOf,
+  saveDelivery,
+  saveDeliveryAmount,
+  type Delivery as DeliveryRow,
+  type DeliveryItem,
+} from '../db/ops';
 import { addDays, fromIso, iso, parseIso, shortDate, startOfWeek, today } from '../lib/dates';
-import { qty, shekelCents, shekelSmart } from '../lib/money';
+import { parseAmountStrict, qty, shekelCents, shekelSmart } from '../lib/money';
 import { useBack } from '../components/useBack';
 
 /** Default delivery date inside a week: today if it is in that week, else the agent's usual day. */
@@ -19,6 +30,8 @@ function defaultDate(weekStart: Date, agent: Agent | undefined): string {
   if (startOfWeek(t).getTime() === weekStart.getTime()) return iso(t);
   return iso(addDays(weekStart, agent?.delivery_day ?? 4));
 }
+
+type Mode = 'items' | 'amount';
 
 export function Delivery() {
   const [params, setParams] = useSearchParams();
@@ -30,11 +43,17 @@ export function Delivery() {
   const [done, setDone] = useState<Set<number> | null>(null);
   const agentId = Number(params.get('agent')) || 0;
   const [items, setItems] = useState<DeliveryItem[] | null>(null);
+  const [existing, setExisting] = useState<DeliveryRow | null>(null);
   const [date, setDate] = useState('');
-  const [existingId, setExistingId] = useState<number | null>(null);
+  const [mode, setMode] = useState<Mode>('items');
+  const [amountText, setAmountText] = useState('');
+  const [note, setNote] = useState('');
+  const [returnable, setReturnable] = useState(true);
+  const [prevSum, setPrevSum] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const chipsRef = useRef<HTMLDivElement>(null);
+  const amountRef = useRef<HTMLInputElement>(null);
 
   useLeaveGuard(dirty);
 
@@ -52,7 +71,7 @@ export function Delivery() {
 
   useEffect(() => {
     deliveredAgents(iso(weekStart)).then(setDone);
-  }, [weekStart, existingId]);
+  }, [weekStart, existing?.id]);
 
   // who comes first: due today and not delivered yet, then the rest by their usual day, delivered ones last
   const ordered = useMemo(() => {
@@ -78,11 +97,19 @@ export function Delivery() {
     if (!agentId || !agents) return;
     let alive = true;
     (async () => {
-      const [its, d] = await Promise.all([deliveryItems(agentId, iso(weekStart)), getDelivery(agentId, iso(weekStart))]);
+      const week = iso(weekStart);
+      const [its, d, last] = await Promise.all([deliveryItems(agentId, week), getDelivery(agentId, week), lastDeliveryOf(agentId, week)]);
       if (!alive) return;
       setItems(its);
-      setExistingId(d?.id ?? null);
+      setExisting(d);
       setDate(d?.delivery_date ?? defaultDate(weekStart, agents.find((a) => a.id === agentId)));
+      setPrevSum(last?.received ?? 0);
+      // open the way this agent was recorded before; an agent without products can only be a sum
+      const m: Mode = d ? (d.manual_amount != null ? 'amount' : 'items') : last?.manual || its.length === 0 ? 'amount' : 'items';
+      setMode(m);
+      setAmountText(d?.manual_amount != null ? String(Number(d.manual_amount)) : '');
+      setNote(d?.note ?? '');
+      setReturnable(d ? !!Number(d.manual_returnable ?? 1) : (last?.returnable ?? true));
       setDirty(false);
     })();
     return () => {
@@ -98,7 +125,7 @@ export function Delivery() {
     if (next.agent === agentId && !next.week) return;
     if (
       dirty &&
-      !(await ask({ title: 'יש שינויים שלא נשמרו', text: 'לעבור בלי לשמור? הכמויות שהוקלדו יימחקו.', ok: 'לעבור בלי לשמור', cancel: 'להישאר', danger: true }))
+      !(await ask({ title: 'יש שינויים שלא נשמרו', text: 'לעבור בלי לשמור? מה שהוקלד יימחק.', ok: 'לעבור בלי לשמור', cancel: 'להישאר', danger: true }))
     )
       return;
     setDirty(false);
@@ -118,12 +145,49 @@ export function Delivery() {
     setDirty(true);
   }
 
+  function chooseMode(m: Mode) {
+    if (m === mode) return;
+    setMode(m);
+    setDirty(true);
+    if (m === 'amount') setTimeout(() => amountRef.current?.focus(), 50);
+  }
+
+  const total = (items ?? []).reduce((s, i) => s + i.qty_received * i.unit_cost, 0);
+  const units = (items ?? []).reduce((s, i) => s + i.qty_received, 0);
+  const amount = parseAmountStrict(amountText);
+  const owedNow = mode === 'amount' ? amount ?? 0 : total;
+  const canCopy = !existing && units === 0 && (items ?? []).some((i) => i.prev_qty > 0);
+  const minDate = iso(weekStart);
+  const maxDate = iso(addDays(weekStart, 6));
+  const todayDow = today().getDay();
+  const hadLines = !!existing && existing.manual_amount == null;
+  const hadSum = !!existing && existing.manual_amount != null;
+
   async function save() {
     if (!items || !agent) return;
+    if (mode === 'amount') {
+      if (amount === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 2500 או 1250.50', 'err');
+      if (amount <= 0 && !existing) {
+        amountRef.current?.focus();
+        return toast('צריך לכתוב כמה צריך לשלם לסוכן', 'err');
+      }
+      if (hadLines && !(await ask({ title: 'לעבור לסכום?', text: 'הכמויות שנרשמו למוצרים בשבוע הזה יימחקו, ובמקומן יישמר רק הסכום.', ok: 'כן, לשמור כסכום' })))
+        return;
+    } else if (hadSum && !(await ask({ title: 'לעבור לפי מוצרים?', text: 'הסכום שנרשם יוחלף בחישוב לפי הכמויות של המוצרים.', ok: 'כן, לפי מוצרים' }))) {
+      return;
+    }
     setSaving(true);
     try {
-      await saveDelivery(agent.id, iso(weekStart), date, items);
-      toast(`האספקה של ${agent.name} נשמרה`);
+      if (mode === 'amount') await saveDeliveryAmount(agent.id, iso(weekStart), date, amount ?? 0, note, returnable);
+      else await saveDelivery(agent.id, iso(weekStart), date, items);
+      const bal = await balanceOf(agent.id);
+      toast(
+        bal > 0.004
+          ? `נשמר ✓ עכשיו אני חייב ל${agent.name} ${shekelSmart(bal)}`
+          : bal < -0.004
+            ? `נשמר ✓ יש לי פלוס של ${shekelSmart(-bal)} אצל ${agent.name}`
+            : 'נשמר ✓ החשבון עם הסוכן מאוזן',
+      );
       setDirty(false);
       back({ force: true });
     } catch (e) {
@@ -135,32 +199,25 @@ export function Delivery() {
   }
 
   async function remove() {
-    if (!existingId || !agent) return;
+    if (!existing || !agent) return;
     const ok = await ask({
       title: `למחוק את האספקה של ${agent.name}?`,
-      text: 'כל הכמויות של השבוע הזה אצל הסוכן יימחקו, וגם ההחזרות שנרשמו עליהן.',
+      text: 'האספקה של השבוע הזה אצל הסוכן תימחק, וגם ההחזרות שנרשמו עליה. החוב לסוכן יירד בהתאם.',
       ok: 'מחיקה',
       danger: true,
     });
     if (!ok) return;
-    await deleteDelivery(existingId);
+    await deleteDelivery(existing.id);
     toast('האספקה נמחקה');
     back({ force: true });
   }
-
-  const total = (items ?? []).reduce((s, i) => s + i.qty_received * i.unit_cost, 0);
-  const units = (items ?? []).reduce((s, i) => s + i.qty_received, 0);
-  const canCopy = !existingId && units === 0 && (items ?? []).some((i) => i.prev_qty > 0);
-  const minDate = iso(weekStart);
-  const maxDate = iso(addDays(weekStart, 6));
-  const todayDow = today().getDay();
 
   if (agents && agents.length === 0) {
     return (
       <>
         <SubBar title="קבלת סחורה" />
         <div className="card empty-card">
-          <p>כדי לרשום סחורה צריך קודם להוסיף סוכן ואת המוצרים שלו.</p>
+          <p>כדי לרשום סחורה צריך קודם להוסיף סוכן.</p>
           <Link to="/agent/new" className="btn small" style={{ width: 'auto', padding: '0 20px' }}>
             <Icon name="plus" /> הוספת סוכן
           </Link>
@@ -168,6 +225,8 @@ export function Delivery() {
       </>
     );
   }
+
+  const saveDisabled = saving || !items || !agent || (mode === 'items' ? !existing && units === 0 : amount === null || (!existing && (amount ?? 0) <= 0));
 
   return (
     <>
@@ -230,17 +289,107 @@ export function Delivery() {
         })}
       </div>
 
-      {items && items.length === 0 ? (
+      <div className="pad" style={{ marginBottom: 10 }}>
+        <div className="segment" role="radiogroup" aria-label="איך לרשום את הסחורה">
+          <button type="button" role="radio" aria-checked={mode === 'items'} className={mode === 'items' ? 'on' : ''} onClick={() => chooseMode('items')}>
+            לפי מוצרים
+          </button>
+          <button type="button" role="radio" aria-checked={mode === 'amount'} className={mode === 'amount' ? 'on' : ''} onClick={() => chooseMode('amount')}>
+            לפי סכום
+          </button>
+        </div>
+      </div>
+
+      {mode === 'amount' ? (
+        <section className="card box sum-box">
+          <label className="lbl" htmlFor="dsum">
+            כמה אני צריך לשלם ל{agent?.name ?? 'סוכן'} על הסחורה הזו?
+          </label>
+          <div className={`money-in big${amount === null ? ' bad' : ''}`}>
+            <input
+              id="dsum"
+              ref={amountRef}
+              inputMode="decimal"
+              enterKeyHint="done"
+              placeholder="0"
+              aria-invalid={amount === null}
+              value={amountText}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => {
+                setAmountText(e.target.value);
+                setDirty(true);
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && !saveDisabled && save()}
+            />
+            <span>₪</span>
+          </div>
+          {amount === null && <div className="field-err">כותבים רק מספר, למשל 2500 או 1250.50</div>}
+          {prevSum > 0 && !amountText && (
+            <div className="chips">
+              <button
+                type="button"
+                className="chip"
+                onClick={() => {
+                  setAmountText(String(Math.round(prevSum * 100) / 100));
+                  setDirty(true);
+                }}
+              >
+                כמו בפעם הקודמת · {shekelSmart(prevSum)}
+              </button>
+            </div>
+          )}
+          <input
+            className="input"
+            style={{ fontSize: 16, fontWeight: 600, height: 48 }}
+            placeholder="הערה, למשל מספר חשבונית (לא חובה)"
+            aria-label="הערה"
+            value={note}
+            onChange={(e) => {
+              setNote(e.target.value);
+              setDirty(true);
+            }}
+          />
+          <div className="line" style={{ gap: 12 }}>
+            <span className="name" style={{ fontSize: 16 }}>
+              יש החזרות ביום ראשון
+              <small className="hint" style={{ display: 'block', fontWeight: 500 }}>
+                {returnable ? 'במסך ההחזרות רושמים כמה זיכוי מגיע' : 'לא יופיע במסך ההחזרות'}
+              </small>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={returnable}
+              aria-label="יש החזרות ביום ראשון"
+              className={`switch${returnable ? ' on' : ''}`}
+              onClick={() => {
+                setReturnable((r) => !r);
+                setDirty(true);
+              }}
+            >
+              <span />
+            </button>
+          </div>
+          {existing && (
+            <button type="button" className="danger-link end-link" onClick={remove}>
+              <Icon name="trash" size={18} /> מחיקת האספקה של השבוע
+            </button>
+          )}
+        </section>
+      ) : items && items.length === 0 ? (
         <div className="card empty-card">
-          <p>ל{agent?.name} עוד אין מוצרים.</p>
-          <Link to={`/product/new?agent=${agentId}`} className="btn small" style={{ width: 'auto', padding: '0 20px' }}>
+          <p>ל{agent?.name} עוד אין מוצרים במחירון. אפשר לרשום את הסחורה לפי סכום, או להוסיף לו מוצרים.</p>
+          <button type="button" className="btn small" style={{ width: 'auto', padding: '0 20px' }} onClick={() => chooseMode('amount')}>
+            רישום לפי סכום
+          </button>
+          <Link to={`/product/new?agent=${agentId}`} className="btn small ghost" style={{ width: 'auto', padding: '0 20px' }}>
             <Icon name="plus" /> מוצר חדש לסוכן
           </Link>
         </div>
       ) : (
         <>
           <div className="pad list-top">
-            <span>{existingId ? 'אספקה שכבר נרשמה · אפשר לתקן' : 'כמה הגיע מכל מוצר?'}</span>
+            <span>{existing && !hadSum ? 'אספקה שכבר נרשמה · אפשר לתקן' : 'כמה הגיע מכל מוצר?'}</span>
             <b>{qty(units)} יח׳</b>
           </div>
           {canCopy && (
@@ -269,7 +418,7 @@ export function Delivery() {
                 </div>
               </div>
             ))}
-            {existingId && (
+            {existing && (
               <button type="button" className="danger-link end-link" onClick={remove}>
                 <Icon name="trash" size={18} /> מחיקת כל האספקה של השבוע
               </button>
@@ -280,11 +429,11 @@ export function Delivery() {
 
       <div className="footer compact">
         <div className="sum">
-          <span>סה״כ קנייה</span>
-          <b>{shekelSmart(total)}</b>
+          <span>חוב לסוכן על זה</span>
+          <b>{shekelSmart(owedNow)}</b>
         </div>
-        <button type="button" className="btn" onClick={save} disabled={saving || !items || !agent || (!existingId && units === 0)}>
-          {saving ? 'שומר…' : existingId ? 'שמירת השינויים' : 'שמירת האספקה'}
+        <button type="button" className="btn" onClick={save} disabled={saveDisabled}>
+          {saving ? 'שומר…' : existing ? 'שמירת השינויים' : 'שמירת האספקה'}
         </button>
       </div>
     </>

@@ -40,10 +40,9 @@ export async function weekSummary(weekStart: Date): Promise<WeekSummary> {
     [from, to],
   );
   const [goods] = await query<{ total: number; open: number }>(
-    `SELECT COALESCE(SUM((l.qty_received - l.qty_returned) * l.unit_cost), 0) AS total,
-            COALESCE(SUM(CASE WHEN d.returns_done = 0 AND l.returnable = 1 THEN 1 ELSE 0 END), 0) AS open
-       FROM deliveries d JOIN delivery_lines l ON l.delivery_id = d.id
-      WHERE d.week_start = ?`,
+    `SELECT COALESCE(SUM(t.received - t.credit), 0) AS total,
+            COALESCE(SUM(CASE WHEN t.returns_done = 0 AND t.returnable_lines > 0 THEN 1 ELSE 0 END), 0) AS open
+       FROM delivery_totals t WHERE t.week_start = ?`,
     [from],
   );
   const [exp] = await query<{ total: number }>(
@@ -79,6 +78,8 @@ export type AgentWeekRow = {
   deliveryDate: string | null;
   cost: number;
   lines: number;
+  /** recorded as one sum, without products */
+  manual: boolean;
 };
 
 export async function agentsForWeek(weekStart: Date): Promise<AgentWeekRow[]> {
@@ -90,10 +91,12 @@ export async function agentsForWeek(weekStart: Date): Promise<AgentWeekRow[]> {
     delivery_date: string | null;
     cost: number | null;
     lines: number | null;
+    manual_amount: number | null;
   }>(
     `SELECT a.id, a.name, a.color, a.delivery_day, d.delivery_date,
-            (SELECT SUM((l.qty_received - l.qty_returned) * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id) AS cost,
-            (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.qty_received > 0) AS lines
+            (SELECT t.received - t.credit FROM delivery_totals t WHERE t.id = d.id) AS cost,
+            (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.qty_received > 0) AS lines,
+            d.manual_amount
        FROM agents a
        LEFT JOIN deliveries d ON d.agent_id = a.id AND d.week_start = ?
       WHERE a.active = 1 OR d.id IS NOT NULL
@@ -109,15 +112,15 @@ export async function agentsForWeek(weekStart: Date): Promise<AgentWeekRow[]> {
     deliveryDate: r.delivery_date,
     cost: Number(r.cost ?? 0),
     lines: Number(r.lines ?? 0),
+    manual: r.manual_amount != null,
   }));
 }
 
 /** Number of agents whose delivery in the given week still waits for returns. */
 export async function openReturnsCount(weekStart: Date): Promise<number> {
   const [row] = await query<{ n: number }>(
-    `SELECT COUNT(DISTINCT d.id) AS n
-       FROM deliveries d JOIN delivery_lines l ON l.delivery_id = d.id
-      WHERE d.week_start = ? AND d.returns_done = 0 AND l.returnable = 1 AND l.qty_received > 0`,
+    `SELECT COUNT(*) AS n FROM delivery_totals t
+      WHERE t.week_start = ? AND t.returns_done = 0 AND t.returnable_lines > 0 AND t.received > 0`,
     [iso(weekStart)],
   );
   return Number(row?.n ?? 0);

@@ -144,7 +144,7 @@ export function Report() {
               </div>
             </div>
             <div className="minis">
-              <div className="mini"><span>הכנסות</span><b>{shekel(r.income)}</b></div>
+              <div className="mini"><span>הכנסות ברוטו</span><b>{shekel(r.income)}</b></div>
               {r.mode === 'paid' ? (
                 <div className="mini"><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
               ) : (

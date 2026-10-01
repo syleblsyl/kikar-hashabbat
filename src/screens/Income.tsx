@@ -10,6 +10,7 @@ import { DAY_NAMES, DAY_SHORT, fromIso, iso, parseIso, startOfWeek, today } from
 import { dayEvents, hebDay, hebDayMonth } from '../lib/hebrew';
 import { parseAmountStrict, shekelSmart } from '../lib/money';
 import { useBack } from '../components/useBack';
+import { weekSummary, type WeekSummary } from '../db/repo';
 
 const TONES = [
   { bg: 'var(--green-soft)', fg: 'var(--green)', icon: 'cash' },
@@ -31,11 +32,14 @@ export function Income() {
   const [values, setValues] = useState<Record<number, string>>({});
   const [week, setWeek] = useState<Map<string, number>>(new Map());
   const [dirty, setDirty] = useState(false);
+  const [wk, setWk] = useState<WeekSummary | null>(null);
   const [saving, setSaving] = useState(false);
 
   const loadWeek = useCallback(async () => {
     const days = weekDays(weekStart);
-    setWeek(await incomeByDay(days[0], days[6]));
+    const [byDay, summary] = await Promise.all([incomeByDay(days[0], days[6]), weekSummary(weekStart)]);
+    setWeek(byDay);
+    setWk(summary);
   }, [weekStart]);
 
   useEffect(() => {
@@ -132,7 +136,10 @@ export function Income() {
         <button type="button" className="icon-btn" aria-label="חזרה" onClick={() => back()}>
           <Icon name="back" />
         </button>
-        <h1 className="page-title" style={{ flex: 1 }}>הכנסה יומית</h1>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <h1 className="page-title">הכנסה יומית</h1>
+          <span className="sub" style={{ fontSize: 14 }}>ברוטו – כל מה שנכנס לקופה, לפני תשלום לסוכנים</span>
+        </div>
       </header>
 
       <div className="pad" style={{ marginBottom: 10 }}>
@@ -219,7 +226,7 @@ export function Income() {
 
       <section className="box" style={{ margin: '12px 16px 0', padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <h2 style={{ fontSize: 18, fontWeight: 800 }}>השבוע עד עכשיו</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 800 }}>הכנסות השבוע (ברוטו)</h2>
           <span className="nowrap" style={{ fontSize: 22, fontWeight: 800, color: 'var(--primary)' }}>{shekelSmart(weekTotal)}</span>
         </div>
         <div className="bars">
@@ -235,6 +242,27 @@ export function Income() {
           })}
         </div>
       </section>
+
+      {wk && (
+        <section className="box net-box">
+          <div>
+            <span>הכנסות ברוטו</span>
+            <b>{shekelSmart(weekTotal)}</b>
+          </div>
+          <div>
+            <span>{wk.mode === 'paid' ? 'פחות: שולם לסוכנים' : 'פחות: סחורה נטו'}</span>
+            <b className="minus">{shekelSmart(-(wk.mode === 'paid' ? wk.paid : wk.goodsCost)).replace('-', '−')}</b>
+          </div>
+          <div>
+            <span>פחות: הוצאות</span>
+            <b className="minus">{shekelSmart(-wk.expenses).replace('-', '−')}</b>
+          </div>
+          <div className="total">
+            <span>רווח נקי השבוע</span>
+            <b>{shekelSmart(weekTotal - (wk.mode === 'paid' ? wk.paid : wk.goodsCost) - wk.expenses)}</b>
+          </div>
+        </section>
+      )}
 
       <div className="sticky-save">
         {dirty && <div className="unsaved">יש שינויים שעוד לא נשמרו · נשמרים גם במעבר ליום אחר</div>}

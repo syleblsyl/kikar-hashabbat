@@ -3,7 +3,20 @@ import { addDays, fromIso, iso, startOfWeek, weekLabel } from '../lib/dates';
 
 /* ======================= deliveries ======================= */
 
-export type Delivery = { id: number; agent_id: number; week_start: string; delivery_date: string; returns_done: number; returns_date: string | null };
+export type Delivery = {
+  id: number;
+  agent_id: number;
+  week_start: string;
+  delivery_date: string;
+  returns_done: number;
+  returns_date: string | null;
+  /** set when the delivery was recorded as one sum instead of per product */
+  manual_amount: number | null;
+  /** set when the returns were recorded as one credit sum instead of per product */
+  manual_credit: number | null;
+  manual_returnable: number;
+  note: string | null;
+};
 
 export type DeliveryItem = {
   product_id: number;
@@ -77,10 +90,14 @@ export async function deliveryItems(agentId: number, weekStart: string): Promise
   return items.map(({ sort: _s, ...rest }) => rest);
 }
 
+function checkWeek(weekStart: string, date: string) {
+  const end = iso(addDays(fromIso(weekStart), 6));
+  if (date < weekStart || date > end) throw new Error('date-outside-week');
+}
+
 /** Saves the quantities that arrived. Lines at 0 are removed; an empty delivery is removed. */
 export async function saveDelivery(agentId: number, weekStart: string, deliveryDate: string, items: DeliveryItem[]) {
-  const end = iso(addDays(fromIso(weekStart), 6));
-  if (deliveryDate < weekStart || deliveryDate > end) throw new Error('date-outside-week');
+  checkWeek(weekStart, deliveryDate);
   let d = await getDelivery(agentId, weekStart);
   const withQty = items.filter((i) => i.qty_received > 0);
   if (!d && withQty.length === 0) return;
@@ -90,7 +107,8 @@ export async function saveDelivery(agentId: number, weekStart: string, deliveryD
   }
   if (!d) throw new Error('delivery not created');
   const set: { statement: string; values?: unknown[] }[] = [
-    { statement: 'UPDATE deliveries SET delivery_date = ? WHERE id = ?', values: [deliveryDate, d.id] },
+    // per product from now on (a sum entered before is replaced, and so is a credit sum)
+    { statement: 'UPDATE deliveries SET delivery_date = ?, manual_amount = NULL, manual_credit = NULL WHERE id = ?', values: [deliveryDate, d.id] },
   ];
   for (const i of items) {
     if (i.qty_received > 0) {
@@ -107,6 +125,47 @@ export async function saveDelivery(agentId: number, weekStart: string, deliveryD
   }
   if (withQty.length === 0) set.push({ statement: 'DELETE FROM deliveries WHERE id = ?', values: [d.id] });
   await runSet(set);
+}
+
+/** Saves a delivery as one sum (what I owe the agent for it), without products. 0 removes it. */
+export async function saveDeliveryAmount(agentId: number, weekStart: string, deliveryDate: string, amount: number, note: string, returnable: boolean) {
+  checkWeek(weekStart, deliveryDate);
+  const d = await getDelivery(agentId, weekStart);
+  if (amount <= 0) {
+    if (d) await deleteDelivery(d.id);
+    return;
+  }
+  if (!d) {
+    await run(
+      'INSERT INTO deliveries (agent_id, week_start, delivery_date, manual_amount, manual_returnable, note, returns_done) VALUES (?, ?, ?, ?, ?, ?, 0)',
+      [agentId, weekStart, deliveryDate, amount, returnable ? 1 : 0, note.trim() || null],
+    );
+    return;
+  }
+  // returns already recorded per product keep their value as a credit sum (the product lines go away)
+  const [t] = await query<{ credit: number }>('SELECT credit FROM delivery_totals WHERE id = ?', [d.id]);
+  const credit = d.returns_done ? Math.min(Number(t?.credit ?? 0), amount) : null;
+  await runSet([
+    { statement: 'DELETE FROM delivery_lines WHERE delivery_id = ?', values: [d.id] },
+    {
+      statement: 'UPDATE deliveries SET delivery_date = ?, manual_amount = ?, manual_returnable = ?, note = ?, manual_credit = ? WHERE id = ?',
+      values: [deliveryDate, amount, returnable ? 1 : 0, note.trim() || null, credit, d.id],
+    },
+  ]);
+}
+
+/** How this agent's previous delivery was recorded, to open the screen the same way. */
+export async function lastDeliveryOf(agentId: number, beforeWeek: string): Promise<{ manual: boolean; received: number; returnable: boolean } | null> {
+  const [r] = await query<{ manual_amount: number | null; received: number; manual_returnable: number }>(
+    'SELECT manual_amount, received, manual_returnable FROM delivery_totals WHERE agent_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
+    [agentId, beforeWeek],
+  );
+  return r ? { manual: r.manual_amount != null, received: Number(r.received), returnable: !!Number(r.manual_returnable) } : null;
+}
+
+/** What I owe one agent right now (negative = the agent owes me). */
+export async function balanceOf(agentId: number): Promise<number> {
+  return (await balances()).get(agentId) ?? 0;
 }
 
 export async function deleteDelivery(id: number) {
@@ -133,19 +192,58 @@ export type ReturnsAgent = {
   returns_done: number;
   returns_date: string | null;
   items: DeliveryItem[];
+  /** the delivery was one sum (no products), so returns can only be a sum too */
+  manual_amount: number | null;
+  /** the returns were recorded as one credit sum */
+  manual_credit: number | null;
+  received: number;
+  credit: number;
+  /** anything that can come back at all */
+  returnable: boolean;
+  note: string | null;
 };
 
 export async function returnsForWeek(weekStart: string): Promise<ReturnsAgent[]> {
-  const ds = await query<{ id: number; agent_id: number; name: string; color: string | null; delivery_date: string; returns_done: number; returns_date: string | null }>(
-    `SELECT d.id, d.agent_id, a.name, a.color, d.delivery_date, d.returns_done, d.returns_date
-       FROM deliveries d JOIN agents a ON a.id = d.agent_id
-      WHERE d.week_start = ? ORDER BY d.returns_done, a.name`,
+  const ds = await query<{
+    id: number;
+    agent_id: number;
+    name: string;
+    color: string | null;
+    delivery_date: string;
+    returns_done: number;
+    returns_date: string | null;
+    manual_amount: number | null;
+    manual_credit: number | null;
+    received: number;
+    credit: number;
+    returnable_lines: number;
+    note: string | null;
+  }>(
+    `SELECT t.id, t.agent_id, a.name, a.color, t.delivery_date, t.returns_done, t.returns_date,
+            t.manual_amount, t.manual_credit, t.received, t.credit, t.returnable_lines, t.note
+       FROM delivery_totals t JOIN agents a ON a.id = t.agent_id
+      WHERE t.week_start = ? ORDER BY t.returns_done, a.name`,
     [weekStart],
   );
   const out: ReturnsAgent[] = [];
   for (const d of ds) {
-    const items = (await deliveryItems(d.agent_id, weekStart)).filter((i) => i.inLine);
-    out.push({ delivery_id: d.id, agent_id: d.agent_id, name: d.name, color: d.color, delivery_date: d.delivery_date, returns_done: d.returns_done, returns_date: d.returns_date, items });
+    const items = d.manual_amount != null ? [] : (await deliveryItems(d.agent_id, weekStart)).filter((i) => i.inLine);
+    out.push({
+      delivery_id: d.id,
+      agent_id: d.agent_id,
+      name: d.name,
+      color: d.color,
+      delivery_date: d.delivery_date,
+      returns_done: d.returns_done,
+      returns_date: d.returns_date,
+      items,
+      manual_amount: d.manual_amount == null ? null : Number(d.manual_amount),
+      manual_credit: d.manual_credit == null ? null : Number(d.manual_credit),
+      received: Number(d.received),
+      credit: Number(d.credit),
+      returnable: Number(d.returnable_lines) > 0,
+      note: d.note,
+    });
   }
   return out;
 }
@@ -156,7 +254,15 @@ export async function saveReturns(deliveryId: number, returnsDate: string, items
       statement: 'UPDATE delivery_lines SET qty_returned = MIN(?, qty_received) WHERE delivery_id = ? AND product_id = ? AND returnable = 1',
       values: [Math.max(0, i.qty_returned), deliveryId, i.product_id],
     })),
-    { statement: 'UPDATE deliveries SET returns_done = 1, returns_date = ? WHERE id = ?', values: [returnsDate, deliveryId] },
+    { statement: 'UPDATE deliveries SET returns_done = 1, returns_date = ?, manual_credit = NULL WHERE id = ?', values: [returnsDate, deliveryId] },
+  ]);
+}
+
+/** Records the returns as one credit sum, without saying which products came back. */
+export async function saveReturnsAmount(deliveryId: number, returnsDate: string, credit: number) {
+  await runSet([
+    { statement: 'UPDATE delivery_lines SET qty_returned = 0 WHERE delivery_id = ?', values: [deliveryId] },
+    { statement: 'UPDATE deliveries SET returns_done = 1, returns_date = ?, manual_credit = ? WHERE id = ?', values: [returnsDate, Math.max(0, credit), deliveryId] },
   ]);
 }
 
@@ -164,10 +270,9 @@ export async function saveReturns(deliveryId: number, returnsDate: string, items
 export async function pendingReturnsWeeks(): Promise<{ week: string; agents: number }[]> {
   const current = iso(startOfWeek(new Date()));
   const rows = await query<{ week_start: string; n: number }>(
-    `SELECT d.week_start, COUNT(DISTINCT d.id) AS n FROM deliveries d
-      WHERE d.returns_done = 0 AND d.week_start < ?
-        AND EXISTS (SELECT 1 FROM delivery_lines l WHERE l.delivery_id = d.id AND l.returnable = 1 AND l.qty_received > 0)
-      GROUP BY d.week_start ORDER BY d.week_start DESC`,
+    `SELECT t.week_start, COUNT(*) AS n FROM delivery_totals t
+      WHERE t.returns_done = 0 AND t.week_start < ? AND t.returnable_lines > 0 AND t.received > 0
+      GROUP BY t.week_start ORDER BY t.week_start DESC`,
     [current],
   );
   return rows.map((r) => ({ week: r.week_start, agents: Number(r.n) }));
@@ -317,20 +422,31 @@ export type LedgerEntry = {
   weekStart?: string;
   /** what I owe the agent right after this entry (negative = the agent owes me) */
   balance: number;
+  /** delivery / returns recorded as one sum (no products) */
+  manual?: boolean;
   /** payments only */
   method?: string | null;
   note?: string | null;
 };
 
 export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
-  const ds = await query<{ id: number; week_start: string; delivery_date: string; returns_done: number; returns_date: string | null; received: number; credit: number; lines: number; returnable: number }>(
-    `SELECT d.id, d.week_start, d.delivery_date, d.returns_done, d.returns_date,
-            COALESCE(SUM(l.qty_received * l.unit_cost), 0) AS received,
-            COALESCE(SUM(l.qty_returned * l.unit_cost), 0) AS credit,
-            COUNT(l.id) AS lines,
-            COALESCE(SUM(CASE WHEN l.returnable = 1 THEN 1 ELSE 0 END), 0) AS returnable
-       FROM deliveries d LEFT JOIN delivery_lines l ON l.delivery_id = d.id
-      WHERE d.agent_id = ? GROUP BY d.id`,
+  const ds = await query<{
+    id: number;
+    week_start: string;
+    delivery_date: string;
+    returns_done: number;
+    returns_date: string | null;
+    received: number;
+    credit: number;
+    lines: number;
+    returnable: number;
+    manual_amount: number | null;
+    manual_credit: number | null;
+    note: string | null;
+  }>(
+    `SELECT id, week_start, delivery_date, returns_done, returns_date, received, credit, lines,
+            returnable_lines AS returnable, manual_amount, manual_credit, note
+       FROM delivery_totals WHERE agent_id = ?`,
     [agentId],
   );
   const pays = await query<{ id: number; date: string; amount: number; method: string | null; note: string | null }>(
@@ -347,7 +463,12 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
       date: d.delivery_date,
       amount: Number(d.received),
       title: 'אספקה',
-      sub: `שבוע ${wl} · ${Number(d.lines) === 1 ? 'מוצר אחד' : `${d.lines} מוצרים`}`,
+      sub:
+        d.manual_amount != null
+          ? `שבוע ${wl} · לפי סכום${d.note ? ` · ${d.note}` : ''}`
+          : `שבוע ${wl} · ${Number(d.lines) === 1 ? 'מוצר אחד' : `${d.lines} מוצרים`}`,
+      manual: d.manual_amount != null,
+      note: d.note,
       pendingReturns: !d.returns_done && Number(d.returnable) > 0,
       weekStart: d.week_start,
       balance: 0,
@@ -360,7 +481,8 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
         date: d.returns_date ?? d.delivery_date,
         amount: -Number(d.credit),
         title: 'החזרות',
-        sub: `שבוע ${wl}`,
+        sub: d.manual_credit != null ? `שבוע ${wl} · זיכוי לפי סכום` : `שבוע ${wl}`,
+        manual: d.manual_credit != null,
         weekStart: d.week_start,
         balance: 0,
       });
@@ -455,7 +577,7 @@ export async function agentStatement(agentId: number, range: StatementRange): Pr
       lines:
         e.kind === 'delivery'
           ? ls.filter((l) => l.qty_received > 0).map((l) => ({ name: l.name, qty: l.qty_received, unit_cost: l.unit_cost }))
-          : e.kind === 'returns'
+          : e.kind === 'returns' && !e.manual
             ? ls.filter((l) => l.qty_returned > 0).map((l) => ({ name: l.name, qty: l.qty_returned, unit_cost: l.unit_cost }))
             : [],
     };
@@ -514,8 +636,7 @@ export async function paymentConfirmation(paymentId: number): Promise<PaymentCon
 export async function balances(): Promise<Map<number, number>> {
   const rows = await query<{ agent_id: number; bal: number }>(
     `SELECT a.id AS agent_id,
-            COALESCE((SELECT SUM((l.qty_received - l.qty_returned) * l.unit_cost)
-                        FROM deliveries d JOIN delivery_lines l ON l.delivery_id = d.id WHERE d.agent_id = a.id), 0)
+            COALESCE((SELECT SUM(t.received - t.credit) FROM delivery_totals t WHERE t.agent_id = a.id), 0)
           - COALESCE((SELECT SUM(p.amount) FROM agent_payments p WHERE p.agent_id = a.id), 0) AS bal
        FROM agents a`,
   );
