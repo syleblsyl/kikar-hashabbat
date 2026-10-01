@@ -295,8 +295,10 @@ export async function deleteExpense(id: number) {
 
 /* ======================= agent payments, ledger, balance ======================= */
 
-export async function addPayment(agentId: number, date: string, amount: number, method: string, note: string) {
-  await run('INSERT INTO agent_payments (agent_id, date, amount, method, note) VALUES (?, ?, ?, ?, ?)', [agentId, date, amount, method, note.trim()]);
+/** Records a payment to the agent and returns its id (for the payment confirmation). */
+export async function addPayment(agentId: number, date: string, amount: number, method: string, note: string): Promise<number> {
+  const res = await run('INSERT INTO agent_payments (agent_id, date, amount, method, note) VALUES (?, ?, ?, ?, ?)', [agentId, date, amount, method, note.trim()]);
+  return res.lastId;
 }
 
 export async function deletePayment(id: number) {
@@ -313,6 +315,11 @@ export type LedgerEntry = {
   sub: string;
   pendingReturns?: boolean;
   weekStart?: string;
+  /** what I owe the agent right after this entry (negative = the agent owes me) */
+  balance: number;
+  /** payments only */
+  method?: string | null;
+  note?: string | null;
 };
 
 export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
@@ -343,6 +350,7 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
       sub: `שבוע ${wl} · ${Number(d.lines) === 1 ? 'מוצר אחד' : `${d.lines} מוצרים`}`,
       pendingReturns: !d.returns_done && Number(d.returnable) > 0,
       weekStart: d.week_start,
+      balance: 0,
     });
     if (d.returns_done) {
       out.push({
@@ -354,6 +362,7 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
         title: 'החזרות',
         sub: `שבוע ${wl}`,
         weekStart: d.week_start,
+        balance: 0,
       });
     }
   }
@@ -366,11 +375,140 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
       amount: -Number(p.amount),
       title: 'תשלום',
       sub: [p.method, p.note].filter(Boolean).join(' · '),
+      balance: 0,
+      method: p.method,
+      note: p.note,
     });
   }
-  const order = { payment: 0, returns: 1, delivery: 2 };
-  out.sort((a, b) => (a.date === b.date ? order[a.kind] - order[b.kind] : a.date < b.date ? 1 : -1));
-  return out;
+  // oldest first to run the balance: on the same day goods arrive, then returns, then the payment
+  const order = { delivery: 0, returns: 1, payment: 2 };
+  out.sort((a, b) => (a.date === b.date ? order[a.kind] - order[b.kind] || a.id - b.id : a.date < b.date ? -1 : 1));
+  let bal = 0;
+  for (const e of out) {
+    bal += e.amount;
+    e.balance = Math.round(bal * 100) / 100;
+  }
+  return out.reverse();
+}
+
+/* ======================= statement & payment confirmation (sent to the agent) ======================= */
+
+export type DocLine = { name: string; qty: number; unit_cost: number };
+export type StatementRow = LedgerEntry & { lines: DocLine[] };
+export type StatementRange = 'since-payment' | 'month' | '3months' | 'all';
+export type Statement = {
+  range: StatementRange;
+  /** first day shown, null = from the beginning */
+  from: string | null;
+  opening: number;
+  rows: StatementRow[];
+  closing: number;
+  delivered: number;
+  credit: number;
+  paid: number;
+  /** weeks whose returns are not recorded yet (the balance will still go down) */
+  pendingWeeks: string[];
+  lastPayment: { date: string; amount: number } | null;
+};
+
+async function linesOf(deliveryIds: number[]): Promise<Map<number, { name: string; qty_received: number; qty_returned: number; unit_cost: number }[]>> {
+  const map = new Map<number, { name: string; qty_received: number; qty_returned: number; unit_cost: number }[]>();
+  if (deliveryIds.length === 0) return map;
+  const rows = await query<{ delivery_id: number; name: string; qty_received: number; qty_returned: number; unit_cost: number }>(
+    `SELECT l.delivery_id, p.name, l.qty_received, l.qty_returned, l.unit_cost
+       FROM delivery_lines l JOIN products p ON p.id = l.product_id
+      WHERE l.delivery_id IN (${deliveryIds.map(() => '?').join(',')})
+      ORDER BY p.name`,
+    deliveryIds,
+  );
+  for (const r of rows) {
+    const list = map.get(r.delivery_id) ?? [];
+    list.push({ name: r.name, qty_received: Number(r.qty_received), qty_returned: Number(r.qty_returned), unit_cost: Number(r.unit_cost) });
+    map.set(r.delivery_id, list);
+  }
+  return map;
+}
+
+/** Account statement for one agent, oldest first, from the chosen point until today. */
+export async function agentStatement(agentId: number, range: StatementRange): Promise<Statement> {
+  const all = (await agentLedger(agentId)).reverse(); // oldest first
+  const lastPayIdx = all.map((e) => e.kind).lastIndexOf('payment');
+  const t = new Date();
+  let start = 0;
+  let from: string | null = null;
+  if (range === 'since-payment' && lastPayIdx >= 0) {
+    start = lastPayIdx + 1;
+    from = all[lastPayIdx].date;
+  } else if (range === 'month' || range === '3months') {
+    from = iso(new Date(t.getFullYear(), t.getMonth() - (range === 'month' ? 0 : 2), 1));
+    start = all.findIndex((e) => e.date >= from!);
+    if (start < 0) start = all.length;
+  }
+  const shown = all.slice(start);
+  const opening = start > 0 ? all[start - 1].balance : 0;
+  const closing = all.length ? all[all.length - 1].balance : 0;
+  const lines = await linesOf([...new Set(shown.filter((e) => e.kind !== 'payment').map((e) => e.id))]);
+  const rows: StatementRow[] = shown.map((e) => {
+    const ls = e.kind === 'payment' ? [] : lines.get(e.id) ?? [];
+    return {
+      ...e,
+      lines:
+        e.kind === 'delivery'
+          ? ls.filter((l) => l.qty_received > 0).map((l) => ({ name: l.name, qty: l.qty_received, unit_cost: l.unit_cost }))
+          : e.kind === 'returns'
+            ? ls.filter((l) => l.qty_returned > 0).map((l) => ({ name: l.name, qty: l.qty_returned, unit_cost: l.unit_cost }))
+            : [],
+    };
+  });
+  const sum = (k: LedgerEntry['kind']) => shown.filter((e) => e.kind === k).reduce((s, e) => s + Math.abs(e.amount), 0);
+  const last = lastPayIdx >= 0 ? all[lastPayIdx] : null;
+  return {
+    range,
+    from,
+    opening,
+    rows,
+    closing,
+    delivered: sum('delivery'),
+    credit: sum('returns'),
+    paid: sum('payment'),
+    pendingWeeks: all.filter((e) => e.pendingReturns && e.weekStart).map((e) => e.weekStart!),
+    lastPayment: last ? { date: last.date, amount: -last.amount } : null,
+  };
+}
+
+export type PaymentConfirmation = {
+  id: number;
+  agentId: number;
+  date: string;
+  amount: number;
+  method: string | null;
+  note: string | null;
+  /** what I owed the agent just before / just after this payment (negative = the agent owes me) */
+  before: number;
+  after: number;
+  /** what I owe the agent today, after everything recorded since */
+  now: number;
+  pendingWeeks: string[];
+};
+
+export async function paymentConfirmation(paymentId: number): Promise<PaymentConfirmation | null> {
+  const [p] = await query<{ agent_id: number }>('SELECT agent_id FROM agent_payments WHERE id = ?', [paymentId]);
+  if (!p) return null;
+  const ledger = await agentLedger(Number(p.agent_id));
+  const e = ledger.find((x) => x.kind === 'payment' && x.id === paymentId);
+  if (!e) return null;
+  return {
+    id: paymentId,
+    agentId: Number(p.agent_id),
+    date: e.date,
+    amount: -e.amount,
+    method: e.method ?? null,
+    note: e.note ?? null,
+    before: Math.round((e.balance - e.amount) * 100) / 100,
+    after: e.balance,
+    now: ledger[0]?.balance ?? 0,
+    pendingWeeks: ledger.filter((x) => x.pendingReturns && x.weekStart && x.date <= e.date).map((x) => x.weekStart!),
+  };
 }
 
 export async function balances(): Promise<Map<number, number>> {

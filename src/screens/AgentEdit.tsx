@@ -10,12 +10,8 @@ import { balances } from '../db/ops';
 import { DAY_SHORT } from '../lib/dates';
 import { shekel, shekelCents } from '../lib/money';
 import { useBack } from '../components/useBack';
+import { waLink } from '../lib/share';
 
-function waLink(phone: string) {
-  const digits = phone.replace(/\D/g, '');
-  const intl = digits.startsWith('0') ? `972${digits.slice(1)}` : digits;
-  return `https://wa.me/${intl}`;
-}
 
 type Form = { name: string; phone: string; color: string; day: number | null; notes: string };
 

@@ -42,3 +42,11 @@ export async function elementToPdf(el: HTMLElement): Promise<Blob> {
   }
   return pdf.output('blob');
 }
+
+/** Renders an on-page element into a PNG picture (for sending in WhatsApp). */
+export async function elementToPng(el: HTMLElement): Promise<Blob> {
+  const { toBlob } = await import('html-to-image');
+  const blob = await toBlob(el, { pixelRatio: 2, backgroundColor: '#ffffff', cacheBust: false });
+  if (!blob) throw new Error('image failed');
+  return blob;
+}

@@ -11,14 +11,11 @@ import { weekInfo } from '../lib/hebrew';
 import { parseAmountStrict, products as productsLabel, shekelCents, shekelSmart } from '../lib/money';
 import { initialOf } from './Agents';
 import { useBack } from '../components/useBack';
+import { myBalanceWords } from '../components/AgentDocs';
+import { waLink } from '../lib/share';
 
 const PAY_METHODS = ['מזומן', 'העברה', 'צ׳ק', 'אחר'];
 
-export function waLink(phone: string) {
-  const digits = phone.replace(/\D/g, '');
-  const intl = digits.startsWith('0') ? `972${digits.slice(1)}` : digits;
-  return `https://wa.me/${intl}`;
-}
 
 function fmtDate(s: string) {
   const d = fromIso(s);
@@ -80,12 +77,14 @@ export function AgentCard() {
     }
     setSaving(true);
     try {
-      await addPayment(agentId, date, parsed, method, note);
-      toast(`נרשם תשלום של ${shekelSmart(parsed)} ל${agent?.name ?? 'סוכן'}`);
+      const pid = await addPayment(agentId, date, parsed, method, note);
       setAmount('');
       setNote('');
       setPayOpen(false);
-      await load();
+      // the card stays in history (without the open form), the confirmation opens on top of it
+      nav(`/agent/${agentId}`, { replace: true });
+      nav(`/agent/${agentId}/receipt/${pid}?new=1`);
+      return;
     } catch (e) {
       console.error(e);
       toast('השמירה נכשלה. נסה שוב.', 'err');
@@ -133,6 +132,8 @@ export function AgentCard() {
 
   const color = agent.color ?? 'var(--primary)';
   const after = balance - (parsed ?? 0);
+  const mine = myBalanceWords(balance, agent.name);
+  const lastPay = ledger.find((e) => e.kind === 'payment');
   const pending = ledger.filter((e) => e.pendingReturns);
   const pendingPast = pending.filter((e) => (e.weekStart ?? '') < iso(startOfWeek(today())));
   const pendingSum = pending.reduce((s, e) => s + e.amount, 0);
@@ -197,8 +198,14 @@ export function AgentCard() {
       </section>
 
       <section className="card balance">
-        <span className="k">{balance < -0.004 ? 'הסוכן חייב לך' : 'יתרה לתשלום לסוכן'}</span>
-        <span className={`v ${balance > 0.004 ? 'owe' : balance < -0.004 ? 'credit' : 'zero'}`}>{shekelSmart(Math.abs(balance))}</span>
+        <span className="k">{mine.label}</span>
+        <span className={`v ${mine.tone}`}>{shekelSmart(Math.abs(balance))}</span>
+        {lastPay && (
+          <span className="hint">
+            תשלום אחרון: {shekelSmart(-lastPay.amount)} ב-{fmtDate(lastPay.date)}
+            {lastPay.method ? ` · ${lastPay.method}` : ''}
+          </span>
+        )}
         {pending.length > 0 && balance > 0.004 && (
           <span className="hint">
             כולל {shekelSmart(pendingSum)} מאספקות שעוד לא נרשמו להן החזרות – אחרי הרישום היתרה תרד.
@@ -214,11 +221,14 @@ export function AgentCard() {
             <span className="go">לרישום</span>
           </Link>
         ))}
-        {!payOpen && (
-          <button type="button" className="btn small" style={{ marginTop: 8 }} onClick={() => setPayOpen(true)}>
-            <Icon name="wallet" size={20} /> רישום תשלום לסוכן
+        <div className="two" style={{ marginTop: 8 }}>
+          <Link to={`/agent/${agentId}/statement`} className="btn small ghost">
+            <Icon name="receipt" size={20} /> דוח חשבון
+          </Link>
+          <button type="button" className="btn small" onClick={() => setPayOpen((o) => !o)} aria-expanded={payOpen}>
+            <Icon name="wallet" size={20} /> תשלום
           </button>
-        )}
+        </div>
       </section>
 
       {payOpen && (
@@ -268,11 +278,16 @@ export function AgentCard() {
           {parsed === null && <div className="field-err">כותבים רק מספר, למשל 1200 או 350.50</div>}
           {(parsed ?? 0) > 0 && (
             <div className="after-row">
-              <span>{after < -0.004 ? 'אחרי התשלום הסוכן יהיה חייב לך' : 'יתרה אחרי התשלום'}</span>
+              <span>
+                {after > 0.004 ? 'אחרי התשלום אני עדיין חייב' : after < -0.004 ? `אחרי התשלום יהיה לי פלוס אצל ${agent.name}` : 'אחרי התשלום החשבון מאוזן'}
+              </span>
               <b>{shekelSmart(Math.abs(after))}</b>
             </div>
           )}
-          <button type="button" className="btn" onClick={pay} disabled={saving}>{saving ? 'שומר…' : 'שמירת התשלום'}</button>
+          <button type="button" className="btn" onClick={pay} disabled={saving}>{saving ? 'שומר…' : 'שמירת התשלום ואישור'}</button>
+          <Link to={`/agent/${agentId}/statement`} className="hint center-link">
+            רוצה לשלוח לסוכן דוח חשבון לפני התשלום? לחץ כאן
+          </Link>
         </section>
       )}
 
@@ -303,15 +318,22 @@ export function AgentCard() {
                       {e.pendingReturns ? ' · ממתין להחזרות' : ''}
                     </span>
                   </span>
-                  {noCredit ? (
-                    <span className="amt muted">ללא זיכוי</span>
-                  ) : (
-                    <span className={`amt${e.amount < 0 ? ' minus' : ''}`}>{shekelSmart(e.amount, { signed: true }).replace('-', '−')}</span>
-                  )}
+                  <span className="amt-col">
+                    {noCredit ? (
+                      <span className="amt muted">ללא זיכוי</span>
+                    ) : (
+                      <span className={`amt${e.amount < 0 ? ' minus' : ''}`}>{shekelSmart(e.amount, { signed: true }).replace('-', '−')}</span>
+                    )}
+                    <small className={e.balance > 0.004 ? 'owe' : e.balance < -0.004 ? 'credit' : ''}>
+                      {e.balance > 0.004 ? `חוב ${shekelSmart(e.balance)}` : e.balance < -0.004 ? `פלוס ${shekelSmart(-e.balance)}` : 'מאוזן'}
+                    </small>
+                  </span>
                 </button>
                 {e.kind === 'payment' && openPayment === e.key && (
                   <div className="entry-more">
-                    <span>תשלום {shekelSmart(-e.amount)} · {fmtDate(e.date)}</span>
+                    <Link to={`/agent/${agentId}/receipt/${e.id}`} className="btn small">
+                      <Icon name="receipt" size={18} /> אישור תשלום
+                    </Link>
                     <button type="button" className="danger-link" onClick={() => removePayment(e)}>
                       <Icon name="trash" size={18} /> מחיקה
                     </button>
@@ -320,7 +342,7 @@ export function AgentCard() {
               </div>
             );
           })}
-          {ledger.length > 0 && <p className="hint ledger-key">+ סחורה שהגיעה (מגדיל את החוב) · − החזרות ותשלומים (מקטינים)</p>}
+          {ledger.length > 0 && <p className="hint ledger-key">+ סחורה (החוב שלי עולה) · − החזרות ותשלומים (החוב יורד) · מתחת לכל סכום: כמה החוב אחרי התנועה. לחיצה על תשלום – אישור תשלום לשליחה.</p>}
         </section>
       ) : (
         <section className="card" style={{ margin: '10px 16px 0', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>

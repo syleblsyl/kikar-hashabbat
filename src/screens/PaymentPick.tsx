@@ -23,7 +23,7 @@ export function PaymentPick() {
 
   return (
     <>
-      <SubBar title="תשלום לסוכן" sub={agents ? `סה״כ חובות לסוכנים: ${shekel(total)}` : undefined} />
+      <SubBar title="תשלום לסוכן" sub={agents ? `סה״כ אני חייב לסוכנים: ${shekel(total)}` : undefined} />
       <section className="card list" style={{ marginTop: 8 }}>
         {agents?.length === 0 && <div className="empty" style={{ borderTop: 0 }}>עוד אין סוכנים.</div>}
         {(agents ?? []).map((a, i) => {
@@ -34,7 +34,7 @@ export function PaymentPick() {
               <span className="grow">
                 <b>{a.name}</b>
                 <span>
-                  {b > 0.004 ? 'יתרה לתשלום' : b < -0.004 ? 'הסוכן חייב לך' : 'אין חוב'}
+                  {b > 0.004 ? 'אני חייב לו' : b < -0.004 ? 'יש לי פלוס אצלו' : 'אין חוב'}
                   {!a.active ? ' · מוסתר' : ''}
                 </span>
               </span>

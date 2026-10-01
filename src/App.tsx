@@ -28,6 +28,8 @@ import { Report } from './screens/Report';
 import { BackupScreen } from './screens/BackupScreen';
 import { ListManager } from './screens/ListManager';
 import { UpdatePanel } from './components/UpdatePanel';
+import { AgentStatement } from './screens/AgentStatement';
+import { PaymentReceipt } from './screens/PaymentReceipt';
 import { backupDue as isBackupDue } from './db/backup';
 import { addExpenseType, addMethod, listExpenseTypes, listMethods, renameExpenseType, renameMethod, setExpenseTypeActive, setMethodActive } from './db/ops';
 import { useBack } from './components/useBack';
@@ -107,6 +109,8 @@ function Shell({ gate, onLock, onChangePin }: { gate: Gate; onLock: () => void; 
             <Route path="/agent/new" element={<AgentEdit />} />
             <Route path="/agent/:id" element={<AgentCard />} />
             <Route path="/agent/:id/edit" element={<AgentEdit />} />
+            <Route path="/agent/:id/statement" element={<AgentStatement />} />
+            <Route path="/agent/:id/receipt/:pid" element={<PaymentReceipt />} />
             <Route path="/settings/categories" element={<Categories />} />
             <Route path="/reports" element={<Report />} />
             <Route path="/settings/backup" element={<BackupScreen />} />

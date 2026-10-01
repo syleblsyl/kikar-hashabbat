@@ -55,7 +55,10 @@ export function Agents() {
                 </span>
               </span>
               {Math.abs(bal.get(a.id) ?? 0) > 0.004 ? (
-                <span className="amt nowrap" style={{ color: (bal.get(a.id) ?? 0) > 0 ? 'var(--red)' : 'var(--green)' }}>{shekel(Math.abs(bal.get(a.id) ?? 0))}</span>
+                <span className="amt-col">
+                  <span className="amt nowrap" style={{ color: (bal.get(a.id) ?? 0) > 0 ? 'var(--red)' : 'var(--green)' }}>{shekel(Math.abs(bal.get(a.id) ?? 0))}</span>
+                  <small>{(bal.get(a.id) ?? 0) > 0 ? 'אני חייב' : 'פלוס שלי'}</small>
+                </span>
               ) : (
                 <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
               )}
