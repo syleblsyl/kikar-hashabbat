@@ -60,10 +60,10 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
       { k: 'סחורה שהגיעה (מחיר קנייה)', v: r.received },
       { k: 'זיכוי מהחזרות', v: -r.credit },
       { k: 'עלות סחורה נטו', v: r.goodsNet },
+      { k: 'שולם לסוכנים החודש', v: r.paid },
       { k: 'הוצאות כלליות', v: r.expenses },
       ...r.byType.map((t) => ({ k: `   ${t.name}`, v: t.total })),
-      { k: 'רווח נקי', v: r.net },
-      { k: 'שולם לסוכנים החודש', v: r.paid },
+      { k: r.mode === 'paid' ? 'רווח נקי (הכנסות − תשלומים לסוכנים − הוצאות)' : 'רווח נקי (הכנסות − סחורה נטו − הוצאות)', v: r.net },
     ],
   );
   sum.eachRow((row, n) => {
@@ -72,11 +72,11 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
   sum.addRow({});
   const wh = sum.addRow({ k: 'לפי שבועות' });
   wh.font = { bold: true, size: 13 };
-  const hdr = sum.addRow(['שבוע', 'הכנסות', 'סחורה נטו', 'הוצאות', 'רווח נקי']);
+  const hdr = sum.addRow(['שבוע', 'הכנסות', r.mode === 'paid' ? 'שולם לסוכנים' : 'סחורה נטו', 'הוצאות', 'רווח נקי']);
   hdr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   hdr.eachCell((c) => (c.fill = HEAD_FILL));
   for (const w of r.weeks) {
-    const row = sum.addRow([`${w.title} (${dmy(w.from)}–${dmy(w.to)})`, w.income, w.goods, w.expenses, w.net]);
+    const row = sum.addRow([`${w.title} (${dmy(w.from)}–${dmy(w.to)})`, w.income, r.mode === 'paid' ? w.paid : w.goods, w.expenses, w.net]);
     [2, 3, 4, 5].forEach((i) => (row.getCell(i).numFmt = MONEY));
   }
   [3, 4, 5].forEach((i) => (sum.getColumn(i).width = 16));

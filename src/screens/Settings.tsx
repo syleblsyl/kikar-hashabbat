@@ -5,10 +5,28 @@ import { Icon } from '../components/Icon';
 import { UpdatePanel } from '../components/UpdatePanel';
 import type { UpdateInfo } from '../lib/updater';
 import { currentVersion, type AppVersion } from '../lib/version';
+import { getNetMode, setSetting, type NetMode } from '../db/repo';
 
-type Props = { update: UpdateInfo | null; setUpdate: (u: UpdateInfo | null) => void; onChangePin: () => void; onLock: () => void };
+type Props = {
+  update: UpdateInfo | null;
+  setUpdate: (u: UpdateInfo | null) => void;
+  lockOn: boolean;
+  onLockSetting: (on: boolean) => void;
+  onChangePin: () => void;
+  onLock: () => void;
+};
 
-export function Settings({ update, setUpdate, onChangePin, onLock }: Props) {
+export function Settings({ update, setUpdate, lockOn, onLockSetting, onChangePin, onLock }: Props) {
+  const [netMode, setNetModeState] = useState<NetMode | null>(null);
+
+  useEffect(() => {
+    getNetMode().then(setNetModeState);
+  }, []);
+
+  async function changeNetMode(m: NetMode) {
+    await setSetting('net_mode', m);
+    setNetModeState(m);
+  }
   const [ver, setVer] = useState<AppVersion | null>(null);
   const native = Capacitor.isNativePlatform();
 
@@ -36,18 +54,48 @@ export function Settings({ update, setUpdate, onChangePin, onLock }: Props) {
       </section>
 
       <section className="card set-group">
-        <h2>אבטחה</h2>
-        <button type="button" className="set-row" style={{ borderTop: 0 }} onClick={onChangePin}>
-          <span className="ic"><Icon name="key" /></span>
-          <span className="grow">שינוי קוד כניסה</span>
-        </button>
-        <button type="button" className="set-row" onClick={onLock}>
+        <h2>חישוב הרווח הנקי</h2>
+        <div className="set-row" style={{ borderTop: 0, flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+          <div className="segment wrap" role="radiogroup" aria-label="חישוב הרווח הנקי">
+            <button type="button" role="radio" aria-checked={netMode === 'paid'} className={netMode === 'paid' ? 'on' : ''} onClick={() => changeNetMode('paid')}>
+              לפי תשלומים לסוכנים
+            </button>
+            <button type="button" role="radio" aria-checked={netMode === 'goods'} className={netMode === 'goods' ? 'on' : ''} onClick={() => changeNetMode('goods')}>
+              לפי סחורה שהתקבלה
+            </button>
+          </div>
+          <span className="hint">
+            {netMode === 'goods'
+              ? 'רווח נקי = הכנסות − סחורה שנשארה (אחרי החזרות) − הוצאות. התשלומים לסוכנים לא מורדים שוב.'
+              : 'רווח נקי = הכנסות − מה ששילמת לסוכנים − הוצאות. כל תשלום לסוכן יורד מהרווח בתאריך התשלום.'}
+          </span>
+        </div>
+      </section>
+
+      <section className="card set-group">
+        <h2>קוד כניסה</h2>
+        <div className="set-row" style={{ borderTop: 0 }}>
           <span className="ic"><Icon name="lock" /></span>
           <span className="grow">
-            נעילה עכשיו
-            <span>האפליקציה ננעלת לבד אחרי דקה ברקע</span>
+            קוד כניסה לאפליקציה
+            <span>{lockOn ? 'נדרש קוד בפתיחה ואחרי דקה ברקע' : 'כבוי – האפליקציה נפתחת ישר'}</span>
           </span>
-        </button>
+          <button type="button" role="switch" aria-checked={lockOn} aria-label="קוד כניסה לאפליקציה" className={`switch${lockOn ? ' on' : ''}`} onClick={() => onLockSetting(!lockOn)}>
+            <span />
+          </button>
+        </div>
+        {lockOn && (
+          <>
+            <button type="button" className="set-row" onClick={onChangePin}>
+              <span className="ic"><Icon name="key" /></span>
+              <span className="grow">שינוי קוד כניסה</span>
+            </button>
+            <button type="button" className="set-row" onClick={onLock}>
+              <span className="ic"><Icon name="lock" /></span>
+              <span className="grow">נעילה עכשיו</span>
+            </button>
+          </>
+        )}
       </section>
 
       <section className="card set-group">

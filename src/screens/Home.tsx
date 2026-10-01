@@ -15,10 +15,11 @@ type Props = {
   weekStart: Date;
   setWeekStart: (d: Date) => void;
   onLock: () => void;
+  lockOn: boolean;
   backupDue: boolean;
 };
 
-export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Props) {
+export function Home({ update, weekStart, setWeekStart, onLock, lockOn, backupDue }: Props) {
   const [sum, setSum] = useState<WeekSummary | null>(null);
   const [agents, setAgents] = useState<AgentWeekRow[]>([]);
   const [pending, setPending] = useState<{ week: string; agents: number }[]>([]);
@@ -67,9 +68,11 @@ export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Pro
             {todayEvents.length > 0 && <b style={{ color: 'var(--primary)' }}> · {todayEvents.map((e) => e.name).join(', ')}</b>}
           </div>
         </div>
-        <button type="button" className="icon-btn" aria-label="נעילה" onClick={onLock}>
-          <Icon name="lock" />
-        </button>
+        {lockOn && (
+          <button type="button" className="icon-btn" aria-label="נעילה" onClick={onLock}>
+            <Icon name="lock" />
+          </button>
+        )}
       </header>
 
       {update?.available && (
@@ -95,17 +98,30 @@ export function Home({ update, weekStart, setWeekStart, onLock, backupDue }: Pro
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div className="k">{isCurrent ? 'רווח נקי השבוע' : `רווח נקי · ${weekInfo(weekStart).title}`}</div>
           <div className="big">{sum ? shekel(sum.net) : '…'}</div>
-          <div className="note">{sum?.hasOpenReturns ? 'לפני החזרות · יתעדכן אחרי שירשמו' : 'הכנסות פחות סחורה נטו והוצאות'}</div>
+          <div className="note">
+            {sum?.mode === 'paid'
+              ? 'הכנסות פחות תשלומים לסוכנים והוצאות'
+              : sum?.hasOpenReturns
+                ? 'לפני החזרות · יתעדכן אחרי שירשמו'
+                : 'הכנסות פחות סחורה נטו והוצאות'}
+          </div>
         </div>
         <div className="minis">
           <Link to={`/income?date=${incomeDate}`} className="mini" style={{ color: '#fff' }}>
             <span>הכנסות</span>
             <b>{sum ? shekel(sum.income) : '…'}</b>
           </Link>
-          <Link to={`/delivery?week=${week}`} className="mini" style={{ color: '#fff' }}>
-            <span>עלות סחורה</span>
-            <b>{sum ? shekel(sum.goodsCost) : '…'}</b>
-          </Link>
+          {sum?.mode === 'paid' ? (
+            <Link to="/payment" className="mini" style={{ color: '#fff' }}>
+              <span>שולם לסוכנים</span>
+              <b>{shekel(sum.paid)}</b>
+            </Link>
+          ) : (
+            <Link to={`/delivery?week=${week}`} className="mini" style={{ color: '#fff' }}>
+              <span>עלות סחורה</span>
+              <b>{sum ? shekel(sum.goodsCost) : '…'}</b>
+            </Link>
+          )}
           <Link to="/expense" className="mini" style={{ color: '#fff' }}>
             <span>הוצאות</span>
             <b>{sum ? shekel(sum.expenses) : '…'}</b>

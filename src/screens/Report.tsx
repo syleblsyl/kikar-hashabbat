@@ -48,7 +48,8 @@ export function Report() {
 
   /** Before sending: if returns are still missing, the numbers will change – say so. */
   async function okToExport(): Promise<boolean> {
-    if (!r || r.openReturns === 0) return true;
+    // with net counted by payments, missing returns do not change the profit
+    if (!r || r.openReturns === 0 || r.mode === 'paid') return true;
     const ok = await ask({
       title: 'ההחזרות עוד לא נרשמו',
       text: `ב-${r.openReturns === 1 ? 'אספקה אחת' : `${r.openReturns} אספקות`} של החודש ההחזרות עוד לא נרשמו, ולכן הרווח בדוח עוד ישתנה.`,
@@ -134,11 +135,21 @@ export function Report() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <div className="k">רווח נקי · {MONTHS[ym.m]}</div>
               <div className="big">{shekel(r.net)}</div>
-              <div className="note">{r.openReturns > 0 ? 'לפני חלק מההחזרות · יתעדכן אחרי שירשמו' : 'הכנסות פחות סחורה נטו והוצאות'}</div>
+              <div className="note">
+                {r.mode === 'paid'
+                  ? 'הכנסות פחות תשלומים לסוכנים והוצאות'
+                  : r.openReturns > 0
+                    ? 'לפני חלק מההחזרות · יתעדכן אחרי שירשמו'
+                    : 'הכנסות פחות סחורה נטו והוצאות'}
+              </div>
             </div>
             <div className="minis">
               <div className="mini"><span>הכנסות</span><b>{shekel(r.income)}</b></div>
-              <div className="mini"><span>סחורה נטו</span><b>{shekel(r.goodsNet)}</b></div>
+              {r.mode === 'paid' ? (
+                <div className="mini"><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
+              ) : (
+                <div className="mini"><span>סחורה נטו</span><b>{shekel(r.goodsNet)}</b></div>
+              )}
               <div className="mini"><span>הוצאות</span><b>{shekel(r.expenses)}</b></div>
             </div>
           </section>
@@ -147,7 +158,11 @@ export function Report() {
             <div className="kpis">
               <div><span>סחורה שהגיעה</span><b>{shekel(r.received)}</b></div>
               <div><span>זיכוי מהחזרות</span><b style={{ color: 'var(--green)' }}>{shekel(r.credit)}</b></div>
-              <div><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
+              {r.mode === 'paid' ? (
+                <div><span>סחורה נטו (אחרי החזרות)</span><b>{shekel(r.goodsNet)}</b></div>
+              ) : (
+                <div><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
+              )}
               <div><span>ימים עם הכנסה</span><b>{r.daily.filter((d) => d.total > 0).length}</b></div>
             </div>
             {r.openReturns > 0 && (
@@ -155,7 +170,7 @@ export function Report() {
                 <span className="ic"><Icon name="undo" size={18} /></span>
                 <span className="txt">
                   <b>{r.openReturns === 1 ? 'אספקה אחת' : `${r.openReturns} אספקות`} בלי החזרות</b>
-                  <span>אחרי הרישום הרווח יעלה</span>
+                  <span>{r.mode === 'paid' ? 'אחרי הרישום החוב לסוכנים ירד' : 'אחרי הרישום הרווח יעלה'}</span>
                 </span>
                 <span className="go">לרישום</span>
               </Link>
@@ -278,7 +293,7 @@ function PrintReport({ r }: { r: MonthReport }) {
         <div>
           <h1>דוח חודשי – {MONTHS[r.month]} {r.year}</h1>
           <p>{r.hebMonths} · הופק {today().toLocaleDateString('he-IL')} ({hebDate(today())})</p>
-          {r.openReturns > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: ב-{r.openReturns} אספקות ההחזרות עוד לא נרשמו, הרווח עוד ישתנה.</p>}
+          {r.openReturns > 0 && r.mode === 'goods' && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: ב-{r.openReturns} אספקות ההחזרות עוד לא נרשמו, הרווח עוד ישתנה.</p>}
         </div>
       </div>
       <table className="p-kpi">
@@ -286,15 +301,15 @@ function PrintReport({ r }: { r: MonthReport }) {
           <tr><td>הכנסות</td><td>{money(r.income)}</td><td>סחורה שהגיעה</td><td>{money(r.received)}</td></tr>
           <tr><td>זיכוי מהחזרות</td><td>{money(r.credit)}</td><td>עלות סחורה נטו</td><td>{money(r.goodsNet)}</td></tr>
           <tr><td>הוצאות כלליות</td><td>{money(r.expenses)}</td><td>שולם לסוכנים</td><td>{money(r.paid)}</td></tr>
-          <tr className="net"><td>רווח נקי</td><td colSpan={3}>{money(r.net)}</td></tr>
+          <tr className="net"><td>רווח נקי</td><td colSpan={3}>{money(r.net)} <small style={{ fontWeight: 400, fontSize: 12, color: '#6b5847' }}>({r.mode === 'paid' ? 'הכנסות − תשלומים לסוכנים − הוצאות' : 'הכנסות − סחורה נטו − הוצאות'})</small></td></tr>
         </tbody>
       </table>
       <h2>לפי שבועות</h2>
       <table>
-        <thead><tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>סחורה נטו</th><th>הוצאות</th><th>רווח נקי</th></tr></thead>
+        <thead><tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>{r.mode === 'paid' ? 'שולם לסוכנים' : 'סחורה נטו'}</th><th>הוצאות</th><th>רווח נקי</th></tr></thead>
         <tbody>
           {r.weeks.map((w) => (
-            <tr key={w.weekStart}><td>{w.title}</td><td>{dm(w.from)}–{dm(w.to)}</td><td>{money(w.income)}</td><td>{money(w.goods)}</td><td>{money(w.expenses)}</td><td><b>{money(w.net)}</b></td></tr>
+            <tr key={w.weekStart}><td>{w.title}</td><td>{dm(w.from)}–{dm(w.to)}</td><td>{money(w.income)}</td><td>{money(r.mode === 'paid' ? w.paid : w.goods)}</td><td>{money(w.expenses)}</td><td><b>{money(w.net)}</b></td></tr>
           ))}
         </tbody>
       </table>

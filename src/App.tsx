@@ -6,6 +6,8 @@ import { BottomNav } from './components/BottomNav';
 import { DialogHost, dismissDialog } from './components/Dialog';
 import { getDb } from './db/sqlite';
 import { hasPin } from './lib/pin';
+import { getSetting, setSetting } from './db/repo';
+import { toast } from './components/Toast';
 import { startOfWeek, today } from './lib/dates';
 import { checkForUpdateThrottled, type UpdateInfo } from './lib/updater';
 import { Home } from './screens/Home';
@@ -34,7 +36,7 @@ import { backupDue as isBackupDue } from './db/backup';
 import { addExpenseType, addMethod, listExpenseTypes, listMethods, renameExpenseType, renameMethod, setExpenseTypeActive, setMethodActive } from './db/ops';
 import { useBack } from './components/useBack';
 
-type Gate = 'loading' | 'setup' | 'locked' | 'open' | 'change-pin' | 'error';
+type Gate = 'loading' | 'locked' | 'open' | 'change-pin' | 'enable-pin' | 'error';
 
 const LOCK_AFTER_MS = 60_000;
 
@@ -61,7 +63,9 @@ class ScreenBoundary extends Component<{ children: ReactNode; onHome: () => void
   }
 }
 
-function Shell({ gate, onLock, onChangePin }: { gate: Gate; onLock: () => void; onChangePin: () => void }) {
+type ShellProps = { gate: Gate; lockOn: boolean; onLock: () => void; onChangePin: () => void; onLockSetting: (on: boolean) => void };
+
+function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps) {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(today()));
   const [backupDue, setBackupDue] = useState(false);
@@ -101,8 +105,8 @@ function Shell({ gate, onLock, onChangePin }: { gate: Gate; onLock: () => void; 
       <div className="screen" ref={scroller}>
         <ScreenBoundary key={loc.pathname} onHome={() => nav('/', { replace: true })}>
           <Routes>
-            <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} backupDue={backupDue} />} />
-            <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} onChangePin={onChangePin} onLock={onLock} />} />
+            <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} lockOn={lockOn} backupDue={backupDue} />} />
+            <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} lockOn={lockOn} onLockSetting={onLockSetting} onChangePin={onChangePin} onLock={onLock} />} />
             <Route path="/catalog" element={<Catalog />} />
             <Route path="/product/:id" element={<ProductEdit />} />
             <Route path="/agents" element={<Agents />} />
@@ -188,13 +192,23 @@ export default function App() {
   const [gate, setGate] = useState<Gate>('loading');
   const [reason, setReason] = useState('');
   const [opened, setOpened] = useState(false);
+  const [lockOn, setLockOn] = useState(false);
+  const lockOnRef = useRef(false);
+  lockOnRef.current = lockOn;
   const hiddenAt = useRef<number | null>(null);
 
   const init = useCallback(async () => {
     setGate('loading');
     try {
       await getDb();
-      setGate((await hasPin()) ? 'locked' : 'setup');
+      // the entry code is optional and off unless it was turned on in Settings
+      const on = (await getSetting('lock_on')) === '1' && (await hasPin());
+      setLockOn(on);
+      if (on) setGate('locked');
+      else {
+        setOpened(true);
+        setGate('open');
+      }
     } catch (e) {
       console.error(e);
       setReason(String((e as Error)?.message ?? e));
@@ -212,7 +226,7 @@ export default function App() {
     const h = CapApp.addListener('appStateChange', ({ isActive }) => {
       if (!isActive) {
         hiddenAt.current = Date.now();
-      } else if (hiddenAt.current && Date.now() - hiddenAt.current > LOCK_AFTER_MS) {
+      } else if (lockOnRef.current && hiddenAt.current && Date.now() - hiddenAt.current > LOCK_AFTER_MS) {
         dismissDialog();
         setGate((g) => (g === 'open' ? 'locked' : g));
       }
@@ -227,7 +241,7 @@ export default function App() {
     if (!Capacitor.isNativePlatform() || gate === 'open') return;
     const h = CapApp.addListener('backButton', () => {
       if (dismissDialog()) return;
-      if (gate === 'change-pin') setGate('open');
+      if (gate === 'change-pin' || gate === 'enable-pin') setGate('open');
       else CapApp.minimizeApp();
     });
     return () => {
@@ -241,6 +255,18 @@ export default function App() {
     setOpened(true);
     setGate('open');
   }, []);
+  const lockSetting = useCallback(async (on: boolean) => {
+    if (on) return setGate('enable-pin'); // choose a code first; it is turned on only after that
+    await setSetting('lock_on', '0');
+    setLockOn(false);
+    toast('קוד הכניסה בוטל – האפליקציה תיפתח בלי קוד');
+  }, []);
+  const pinEnabled = useCallback(async () => {
+    await setSetting('lock_on', '1');
+    setLockOn(true);
+    setGate('open');
+    toast('קוד הכניסה הופעל');
+  }, []);
 
   if (gate === 'loading') {
     return (
@@ -252,13 +278,13 @@ export default function App() {
   if (gate === 'error') return <OpenError reason={reason} onRetry={init} />;
 
   const lockScreen =
-    gate === 'setup' || gate === 'locked' || gate === 'change-pin' ? (
+    gate === 'locked' || gate === 'change-pin' || gate === 'enable-pin' ? (
       <div className="lock-layer">
         <Lock
           key={gate}
-          mode={gate === 'setup' ? 'setup' : gate === 'change-pin' ? 'change' : 'unlock'}
-          onDone={unlocked}
-          onCancel={gate === 'change-pin' ? () => setGate('open') : undefined}
+          mode={gate === 'enable-pin' ? 'setup' : gate === 'change-pin' ? 'change' : 'unlock'}
+          onDone={gate === 'enable-pin' ? pinEnabled : unlocked}
+          onCancel={gate === 'locked' ? undefined : () => setGate('open')}
         />
       </div>
     ) : null;
@@ -267,7 +293,7 @@ export default function App() {
     <>
       {opened && (
         <HashRouter>
-          <Shell gate={gate} onLock={lock} onChangePin={changePin} />
+          <Shell gate={gate} lockOn={lockOn} onLock={lock} onChangePin={changePin} onLockSetting={lockSetting} />
         </HashRouter>
       )}
       {lockScreen}

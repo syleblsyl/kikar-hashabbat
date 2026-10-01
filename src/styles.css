@@ -526,3 +526,5 @@ a.btn { text-decoration: none; }
 .doc-kv > div { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid #f0e6d6; }
 .doc-kv span { color: #6b5847; }
 .doc-kv b { font-weight: 800; text-align: left; }
+.segment.wrap > * { height: auto; min-height: 44px; padding: 6px 8px; font-size: 15px; line-height: 1.2; }
+.set-row .hint { font-weight: 500; }

@@ -19,7 +19,8 @@ const TABLES = [
   'agent_payments',
   'settings',
 ];
-const PRIVATE_SETTINGS = ['pin_hash', 'pin_salt'];
+// belong to this phone, not to the store's data
+const PRIVATE_SETTINGS = ['pin_hash', 'pin_salt', 'lock_on', 'pin_fails', 'pin_wait_until'];
 
 export type Backup = {
   app: 'kikar-hashabbat';
@@ -98,7 +99,7 @@ export async function restoreBackup(b: Backup) {
   }
   const set: { statement: string; values?: unknown[] }[] = [];
   for (const t of [...TABLES].reverse()) {
-    set.push({ statement: t === 'settings' ? `DELETE FROM settings WHERE key NOT IN ('pin_hash', 'pin_salt')` : `DELETE FROM ${t}` });
+    set.push({ statement: t === 'settings' ? `DELETE FROM settings WHERE key NOT IN (${PRIVATE_SETTINGS.map((k) => `'${k}'`).join(', ')})` : `DELETE FROM ${t}` });
   }
   for (const t of TABLES) {
     for (const row of b.tables[t] ?? []) {

@@ -1,3 +1,4 @@
+import { getNetMode, type NetMode } from './repo';
 import { query } from './sqlite';
 import { addDays, fromIso, iso, startOfWeek } from '../lib/dates';
 import { hebMonthsOf, weekInfo } from '../lib/hebrew';
@@ -17,7 +18,7 @@ export type MonthReport = {
   byType: { name: string; total: number }[];
   net: number;
   paid: number;
-  weeks: { weekStart: string; title: string; from: string; to: string; income: number; goods: number; expenses: number; net: number }[];
+  weeks: { weekStart: string; title: string; from: string; to: string; income: number; goods: number; paid: number; expenses: number; net: number }[];
   agents: { id: number; name: string; color: string | null; received: number; returned: number; net: number; paid: number }[];
   products: { id: number; name: string; received: number; returned: number; sold: number; cost: number }[];
   daily: { date: string; amounts: Record<string, number>; total: number }[];
@@ -26,6 +27,8 @@ export type MonthReport = {
   expenseRows: { date: string; type: string; amount: number; note: string }[];
   paymentRows: { date: string; agent: string; amount: number; method: string; note: string }[];
   openReturns: number;
+  /** how net was counted: 'paid' = minus payments to agents, 'goods' = minus goods kept */
+  mode: NetMode;
 };
 
 const num = (v: unknown) => Number(v ?? 0);
@@ -112,6 +115,8 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
   for (const e of exp) byTypeMap.set(e.type ?? 'ללא סוג', (byTypeMap.get(e.type ?? 'ללא סוג') ?? 0) + num(e.amount));
   const expenses = [...byTypeMap.values()].reduce((a, b) => a + b, 0);
 
+  const mode = await getNetMode();
+
   // weeks (Sunday–Saturday) that touch the month, clipped to the month
   const weeks: MonthReport['weeks'] = [];
   for (let ws = startOfWeek(fromIso(from)); iso(ws) <= to; ws = addDays(ws, 7)) {
@@ -120,7 +125,8 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
     const inc = daily.filter((d) => d.date >= wf && d.date <= wt).reduce((s, d) => s + d.total, 0);
     const goods = lines.filter((l) => l.date >= wf && l.date <= wt).reduce((s, l) => s + (num(l.qty_received) - num(l.qty_returned)) * num(l.unit_cost), 0);
     const ex = exp.filter((e) => e.date >= wf && e.date <= wt).reduce((s, e) => s + num(e.amount), 0);
-    weeks.push({ weekStart: iso(ws), title: weekInfo(ws).title, from: wf, to: wt, income: inc, goods, expenses: ex, net: inc - goods - ex });
+    const pd = payRows.filter((p) => p.date >= wf && p.date <= wt).reduce((s, p) => s + num(p.amount), 0);
+    weeks.push({ weekStart: iso(ws), title: weekInfo(ws).title, from: wf, to: wt, income: inc, goods, paid: pd, expenses: ex, net: inc - (mode === 'paid' ? pd : goods) - ex });
   }
 
   const goodsNet = received - credit;
@@ -137,7 +143,8 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
     goodsNet,
     expenses,
     byType: [...byTypeMap.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total),
-    net: income - goodsNet - expenses,
+    net: income - (mode === 'paid' ? paid : goodsNet) - expenses,
+    mode,
     paid,
     weeks,
     agents: [...agentMap.values()].sort((a, b) => b.net - a.net),

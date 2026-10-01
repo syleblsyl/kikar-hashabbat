@@ -10,11 +10,24 @@ export async function setSetting(key: string, value: string) {
   await run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, value]);
 }
 
+/**
+ * How net profit is counted:
+ * 'paid'  – income − what was paid to agents − expenses (money that actually left the store)
+ * 'goods' – income − goods kept (received − returned, at cost) − expenses
+ */
+export type NetMode = 'paid' | 'goods';
+
+export async function getNetMode(): Promise<NetMode> {
+  return (await getSetting('net_mode')) === 'goods' ? 'goods' : 'paid';
+}
+
 export type WeekSummary = {
   income: number;
   goodsCost: number;
+  paid: number;
   expenses: number;
   net: number;
+  mode: NetMode;
   hasOpenReturns: boolean;
 };
 
@@ -37,10 +50,24 @@ export async function weekSummary(weekStart: Date): Promise<WeekSummary> {
     'SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE date BETWEEN ? AND ?',
     [from, to],
   );
+  const [pay] = await query<{ total: number }>(
+    'SELECT COALESCE(SUM(amount), 0) AS total FROM agent_payments WHERE date BETWEEN ? AND ?',
+    [from, to],
+  );
+  const mode = await getNetMode();
   const income = Number(inc?.total ?? 0);
   const goodsCost = Number(goods?.total ?? 0);
+  const paid = Number(pay?.total ?? 0);
   const expenses = Number(exp?.total ?? 0);
-  return { income, goodsCost, expenses, net: income - goodsCost - expenses, hasOpenReturns: Number(goods?.open ?? 0) > 0 };
+  return {
+    income,
+    goodsCost,
+    paid,
+    expenses,
+    mode,
+    net: income - (mode === 'paid' ? paid : goodsCost) - expenses,
+    hasOpenReturns: Number(goods?.open ?? 0) > 0,
+  };
 }
 
 export type AgentWeekRow = {
