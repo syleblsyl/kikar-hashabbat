@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ask } from '../components/Dialog';
 import { Icon } from '../components/Icon';
+import { matches, SearchBox } from '../components/SearchBox';
 import { toast } from '../components/Toast';
 import { monthReport, type MonthReport } from '../db/report';
 import { fromIso, MONTHS, today } from '../lib/dates';
@@ -32,6 +33,7 @@ export function Report() {
   const [r, setR] = useState<MonthReport | null>(null);
   const [busy, setBusy] = useState<'' | 'xlsx' | 'pdf'>('');
   const [printing, setPrinting] = useState(false);
+  const [q, setQ] = useState('');
   const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -140,7 +142,7 @@ export function Report() {
                   ? 'הכנסות פחות תשלומים לסוכנים והוצאות'
                   : r.openReturns > 0
                     ? 'לפני חלק מההחזרות · יתעדכן אחרי שירשמו'
-                    : 'הכנסות פחות סחורה נטו והוצאות'}
+                    : 'הכנסות פחות חשבוניות נטו והוצאות'}
               </div>
             </div>
             <div className="minis">
@@ -148,7 +150,7 @@ export function Report() {
               {r.mode === 'paid' ? (
                 <div className="mini"><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
               ) : (
-                <div className="mini"><span>סחורה נטו</span><b>{shekel(r.goodsNet)}</b></div>
+                <div className="mini"><span>חשבוניות נטו</span><b>{shekel(r.goodsNet)}</b></div>
               )}
               <div className="mini"><span>הוצאות</span><b>{shekel(r.expenses)}</b></div>
             </div>
@@ -156,10 +158,10 @@ export function Report() {
 
           <section className="card rsec">
             <div className="kpis">
-              <div><span>סחורה שהגיעה</span><b>{shekel(r.received)}</b></div>
+              <div><span>חשבוניות</span><b>{shekel(r.received)}</b></div>
               <div><span>זיכוי מהחזרות</span><b style={{ color: 'var(--green)' }}>{shekel(r.credit)}</b></div>
               {r.mode === 'paid' ? (
-                <div><span>סחורה נטו (אחרי החזרות)</span><b>{shekel(r.goodsNet)}</b></div>
+                <div><span>חשבוניות נטו (אחרי החזרות)</span><b>{shekel(r.goodsNet)}</b></div>
               ) : (
                 <div><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
               )}
@@ -211,9 +213,10 @@ export function Report() {
           {r.agents.length > 0 && (
             <section className="card rsec">
               <div className="h2-row"><h2>לפי סוכן</h2><small>בש״ח</small></div>
+              {(r.agents.length > 6 || r.products.length > 10) && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן או מוצר" />}
               <div className="tbl">
-                <div className="tr th"><span>סוכן</span><span>הגיע</span><span>חזר</span><span>נטו</span><span>שולם</span></div>
-                {r.agents.map((a) => (
+                <div className="tr th"><span>סוכן</span><span>חשבוניות</span><span>זיכוי</span><span>נטו</span><span>שולם</span></div>
+                {r.agents.filter((a) => matches(a.name, q)).map((a) => (
                   <Link key={a.id} to={`/agent/${a.id}`} className="tr">
                     <span className="nm"><i style={{ background: a.color ?? 'var(--primary)' }} />{a.name}</span>
                     <span>{Math.round(a.received).toLocaleString('en-US')}</span>
@@ -235,10 +238,10 @@ export function Report() {
 
           {r.products.length > 0 && (
             <section className="card rsec">
-              <div className="h2-row"><h2>המוצרים הנמכרים ביותר</h2><small>עלות בש״ח</small></div>
+              <div className="h2-row"><h2>{q ? 'מוצרים' : 'המוצרים הנמכרים ביותר'}</h2><small>עלות בש״ח</small></div>
               <div className="tbl p3">
                 <div className="tr th"><span>מוצר</span><span>נמכר</span><span>הוחזר</span><span>עלות נטו</span></div>
-                {r.products.slice(0, 10).map((p) => (
+                {(q ? r.products.filter((p) => matches(p.name, q)) : r.products.slice(0, 10)).map((p) => (
                   <div key={p.id} className="tr">
                     <span className="nm">{p.name}</span>
                     <span><b>{qty(p.sold)}</b></span>
@@ -252,7 +255,7 @@ export function Report() {
 
           {r.byType.length > 0 && (
             <section className="card rsec">
-              <h2>הוצאות כלליות</h2>
+              <h2>הוצאות</h2>
               {r.byType.map((t) => (
                 <div key={t.name} className="kv"><span>{t.name}</span><b>{shekel(t.total)}</b></div>
               ))}
@@ -298,15 +301,15 @@ function PrintReport({ r }: { r: MonthReport }) {
       </div>
       <table className="p-kpi">
         <tbody>
-          <tr><td>הכנסות</td><td>{money(r.income)}</td><td>סחורה שהגיעה</td><td>{money(r.received)}</td></tr>
-          <tr><td>זיכוי מהחזרות</td><td>{money(r.credit)}</td><td>עלות סחורה נטו</td><td>{money(r.goodsNet)}</td></tr>
-          <tr><td>הוצאות כלליות</td><td>{money(r.expenses)}</td><td>שולם לסוכנים</td><td>{money(r.paid)}</td></tr>
-          <tr className="net"><td>רווח נקי</td><td colSpan={3}>{money(r.net)} <small style={{ fontWeight: 400, fontSize: 12, color: '#6b5847' }}>({r.mode === 'paid' ? 'הכנסות − תשלומים לסוכנים − הוצאות' : 'הכנסות − סחורה נטו − הוצאות'})</small></td></tr>
+          <tr><td>הכנסות ברוטו</td><td>{money(r.income)}</td><td>חשבוניות</td><td>{money(r.received)}</td></tr>
+          <tr><td>זיכוי מהחזרות</td><td>{money(r.credit)}</td><td>חשבוניות נטו</td><td>{money(r.goodsNet)}</td></tr>
+          <tr><td>הוצאות (קבועות ופועלים)</td><td>{money(r.expenses)}</td><td>שולם לסוכנים</td><td>{money(r.paid)}</td></tr>
+          <tr className="net"><td>רווח נקי</td><td colSpan={3}>{money(r.net)} <small style={{ fontWeight: 400, fontSize: 12, color: '#6b5847' }}>({r.mode === 'paid' ? 'הכנסות − תשלומים לסוכנים − הוצאות' : 'הכנסות − חשבוניות נטו − הוצאות'})</small></td></tr>
         </tbody>
       </table>
       <h2>לפי שבועות</h2>
       <table>
-        <thead><tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>{r.mode === 'paid' ? 'שולם לסוכנים' : 'סחורה נטו'}</th><th>הוצאות</th><th>רווח נקי</th></tr></thead>
+        <thead><tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>{r.mode === 'paid' ? 'שולם לסוכנים' : 'חשבוניות נטו'}</th><th>הוצאות</th><th>רווח נקי</th></tr></thead>
         <tbody>
           {r.weeks.map((w) => (
             <tr key={w.weekStart}><td>{w.title}</td><td>{dm(w.from)}–{dm(w.to)}</td><td>{money(w.income)}</td><td>{money(r.mode === 'paid' ? w.paid : w.goods)}</td><td>{money(w.expenses)}</td><td><b>{money(w.net)}</b></td></tr>
@@ -329,7 +332,7 @@ function PrintReport({ r }: { r: MonthReport }) {
         <>
           <h2>לפי סוכן</h2>
           <table>
-            <thead><tr><th>סוכן</th><th>סחורה שהגיעה</th><th>זיכוי החזרות</th><th>עלות נטו</th><th>שולם החודש</th></tr></thead>
+            <thead><tr><th>סוכן</th><th>חשבוניות</th><th>זיכוי החזרות</th><th>נטו</th><th>שולם החודש</th></tr></thead>
             <tbody>
               {r.agents.map((a) => (
                 <tr key={a.id}><td>{a.name}</td><td>{money(a.received)}</td><td>{money(a.returned)}</td><td><b>{money(a.net)}</b></td><td>{money(a.paid)}</td></tr>
@@ -354,7 +357,7 @@ function PrintReport({ r }: { r: MonthReport }) {
       )}
       {r.byType.length > 0 && (
         <>
-          <h2>הוצאות כלליות</h2>
+          <h2>הוצאות</h2>
           <table>
             <tbody>
               {r.byType.map((t) => (

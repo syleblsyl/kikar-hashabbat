@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
+import { matches, SearchBox } from '../components/SearchBox';
 import { listAgents, type Agent } from '../db/catalog';
 import { balances } from '../db/ops';
 import { DAY_NAMES } from '../lib/dates';
@@ -15,6 +16,7 @@ export function Agents() {
   const [hidden, setHidden] = useState<Agent[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [bal, setBal] = useState<Map<number, number>>(new Map());
+  const [q, setQ] = useState('');
 
   useEffect(() => {
     listAgents().then(setAgents);
@@ -44,7 +46,8 @@ export function Agents() {
         </div>
       ) : (
         <section className="card list" style={{ marginTop: 8 }}>
-          {(agents ?? []).map((a, i) => (
+          {(agents?.length ?? 0) > 5 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן" className="in-list" />}
+          {(agents ?? []).filter((a) => matches(a.name, q) || matches(a.phone, q)).map((a, i) => (
             <Link key={a.id} to={`/agent/${a.id}`} className="row" style={i === 0 ? { borderTop: 0 } : undefined}>
               <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{initialOf(a.name)}</span>
               <span className="grow">

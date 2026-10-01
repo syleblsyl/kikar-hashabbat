@@ -55,15 +55,15 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
       { header: 'סכום', key: 'v', width: 18, money: true },
     ],
     [
-      { k: 'הכנסות', v: r.income },
+      { k: 'הכנסות ברוטו', v: r.income },
       ...r.byMethod.map((m) => ({ k: `   ${m.name}`, v: m.total })),
-      { k: 'סחורה שהגיעה (מחיר קנייה)', v: r.received },
+      { k: 'חשבוניות מהסוכנים', v: r.received },
       { k: 'זיכוי מהחזרות', v: -r.credit },
-      { k: 'עלות סחורה נטו', v: r.goodsNet },
+      { k: 'חשבוניות נטו (אחרי החזרות)', v: r.goodsNet },
       { k: 'שולם לסוכנים החודש', v: r.paid },
-      { k: 'הוצאות כלליות', v: r.expenses },
+      { k: 'הוצאות (קבועות ופועלים)', v: r.expenses },
       ...r.byType.map((t) => ({ k: `   ${t.name}`, v: t.total })),
-      { k: r.mode === 'paid' ? 'רווח נקי (הכנסות − תשלומים לסוכנים − הוצאות)' : 'רווח נקי (הכנסות − סחורה נטו − הוצאות)', v: r.net },
+      { k: r.mode === 'paid' ? 'רווח נקי (הכנסות − תשלומים לסוכנים − הוצאות)' : 'רווח נקי (הכנסות − חשבוניות נטו − הוצאות)', v: r.net },
     ],
   );
   sum.eachRow((row, n) => {
@@ -72,7 +72,7 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
   sum.addRow({});
   const wh = sum.addRow({ k: 'לפי שבועות' });
   wh.font = { bold: true, size: 13 };
-  const hdr = sum.addRow(['שבוע', 'הכנסות', r.mode === 'paid' ? 'שולם לסוכנים' : 'סחורה נטו', 'הוצאות', 'רווח נקי']);
+  const hdr = sum.addRow(['שבוע', 'הכנסות', r.mode === 'paid' ? 'שולם לסוכנים' : 'חשבוניות נטו', 'הוצאות', 'רווח נקי']);
   hdr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   hdr.eachCell((c) => (c.fill = HEAD_FILL));
   for (const w of r.weeks) {
@@ -136,7 +136,7 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     'לפי סוכן',
     [
       { header: 'סוכן', key: 'name', width: 22 },
-      { header: 'סחורה שהגיעה', key: 'received', width: 15, money: true },
+      { header: 'חשבוניות', key: 'received', width: 15, money: true },
       { header: 'זיכוי החזרות', key: 'returned', width: 15, money: true },
       { header: 'עלות נטו', key: 'net', width: 15, money: true },
       { header: 'שולם החודש', key: 'paid', width: 15, money: true },

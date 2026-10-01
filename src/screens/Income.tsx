@@ -1,16 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ask, askText } from '../components/Dialog';
 import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
 import { toast } from '../components/Toast';
-import { WeekBar } from '../components/WeekBar';
-import { addMethod, incomeByDay, incomeForDay, listMethods, methodsForDay, saveIncomeDay, weekDays, type Method } from '../db/ops';
-import { DAY_NAMES, DAY_SHORT, fromIso, iso, parseIso, startOfWeek, today } from '../lib/dates';
+import { MonthBar, sameYM, thisMonth } from '../components/MonthBar';
+import { addMethod, incomeByDay, incomeForDay, listMethods, methodsForDay, saveIncomeDay, type Method } from '../db/ops';
+import { DAY_NAMES, DAY_SHORT, fromIso, iso, parseIso, today } from '../lib/dates';
 import { dayEvents, hebDay, hebDayMonth } from '../lib/hebrew';
 import { parseAmountStrict, shekelSmart } from '../lib/money';
 import { useBack } from '../components/useBack';
-import { weekSummary, type WeekSummary } from '../db/repo';
+import { monthRange, monthSummary, type MonthSummary } from '../db/repo';
 
 const TONES = [
   { bg: 'var(--green-soft)', fg: 'var(--green)', icon: 'cash' },
@@ -27,20 +27,20 @@ export function Income() {
   const back = useBack();
   const date = iso(parseIso(params.get('date')) ?? today());
   const day = fromIso(date);
-  const weekStart = useMemo(() => startOfWeek(fromIso(date)), [date]);
+  const ym = { y: day.getFullYear(), m: day.getMonth() };
   const [methods, setMethods] = useState<Method[]>([]);
   const [values, setValues] = useState<Record<number, string>>({});
-  const [week, setWeek] = useState<Map<string, number>>(new Map());
+  const [month, setMonth] = useState<Map<string, number>>(new Map());
   const [dirty, setDirty] = useState(false);
-  const [wk, setWk] = useState<WeekSummary | null>(null);
+  const [ms, setMs] = useState<MonthSummary | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const loadWeek = useCallback(async () => {
-    const days = weekDays(weekStart);
-    const [byDay, summary] = await Promise.all([incomeByDay(days[0], days[6]), weekSummary(weekStart)]);
-    setWeek(byDay);
-    setWk(summary);
-  }, [weekStart]);
+  const loadMonth = useCallback(async () => {
+    const { from, to } = monthRange(ym.y, ym.m);
+    const [byDay, summary] = await Promise.all([incomeByDay(from, to), monthSummary(ym.y, ym.m)]);
+    setMonth(byDay);
+    setMs(summary);
+  }, [ym.y, ym.m]);
 
   useEffect(() => {
     (async () => {
@@ -52,16 +52,15 @@ export function Income() {
   }, [date]);
 
   useEffect(() => {
-    loadWeek();
-  }, [loadWeek]);
+    loadMonth();
+  }, [loadMonth]);
 
   const parsed = new Map(methods.map((m) => [m.id, parseAmountStrict(values[m.id] ?? '')]));
   const invalid = methods.filter((m) => parsed.get(m.id) === null);
   const dayTotal = methods.reduce((s, m) => s + (parsed.get(m.id) ?? 0), 0);
-  const liveWeek = new Map(week);
-  liveWeek.set(date, dayTotal);
-  const weekTotal = [...liveWeek.values()].reduce((a, b) => a + b, 0);
-  const maxDay = Math.max(1, ...liveWeek.values());
+  const live = new Map(month);
+  live.set(date, dayTotal);
+  const monthTotal = [...live.values()].reduce((a, b) => a + b, 0);
 
   /** Saves the day. Returns false (and says why) if an amount is not a valid number. */
   async function persist(): Promise<boolean> {
@@ -73,7 +72,7 @@ export function Income() {
     for (const x of methods) m.set(x.id, parsed.get(x.id) ?? 0);
     await saveIncomeDay(date, m);
     setDirty(false);
-    await loadWeek();
+    await loadMonth();
     return true;
   }
 
@@ -128,7 +127,14 @@ export function Income() {
   }
 
   const events = dayEvents(day);
-  const days = weekDays(weekStart);
+  // the month as a calendar: Sunday first, blanks before the 1st
+  const first = new Date(ym.y, ym.m, 1);
+  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+  const cells: (string | null)[] = [
+    ...Array.from({ length: first.getDay() }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => iso(new Date(ym.y, ym.m, i + 1))),
+  ];
+  const todayIso = iso(today());
 
   return (
     <>
@@ -143,26 +149,29 @@ export function Income() {
       </header>
 
       <div className="pad" style={{ marginBottom: 10 }}>
-        <WeekBar
-          weekStart={weekStart}
-          onChange={(w) => {
-            const t = today();
-            pick(startOfWeek(t).getTime() === w.getTime() ? iso(t) : iso(w));
+        <MonthBar
+          ym={ym}
+          onChange={(next) => {
+            pick(sameYM(next, thisMonth()) ? iso(today()) : iso(new Date(next.y, next.m, 1)));
           }}
         />
       </div>
 
-      <div className="days">
-        {days.map((d, i) => {
+      <div className="cal" role="grid" aria-label="ימי החודש">
+        {DAY_SHORT.map((d) => (
+          <span key={d} className="cal-h">{d}</span>
+        ))}
+        {cells.map((d, i) => {
+          if (!d) return <span key={`b${i}`} />;
           const dd = fromIso(d);
           const chag = dayEvents(dd).some((e) => e.chag);
-          const cls = ['day', d === date ? 'on' : '', chag ? 'chag' : '', i === 6 ? 'sat' : ''].join(' ');
+          const v = live.get(d) ?? 0;
+          const cls = ['cal-d', d === date ? 'on' : '', chag ? 'chag' : '', dd.getDay() === 6 ? 'sat' : '', d === todayIso ? 'today' : '', d > todayIso ? 'future' : ''].join(' ');
           return (
-            <button key={d} type="button" className={cls} onClick={() => pick(d)} aria-pressed={d === date} aria-label={`${DAY_NAMES[i]} ${dd.getDate()}`}>
-              <b>{DAY_SHORT[i]}</b>
-              <span className="g">{dd.getDate()}</span>
+            <button key={d} type="button" className={cls} onClick={() => pick(d)} aria-pressed={d === date} aria-label={`${DAY_NAMES[dd.getDay()]} ${dd.getDate()}${v > 0 ? `, ${Math.round(v)} שקלים` : ''}`}>
+              <b>{dd.getDate()}</b>
               <span className="h">{hebDay(dd)}</span>
-              <span className={`mark${(liveWeek.get(d) ?? 0) > 0 ? ' has' : ''}`} />
+              <span className={`mark${v > 0 ? ' has' : ''}`} />
             </button>
           );
         })}
@@ -224,42 +233,23 @@ export function Income() {
         </div>
       </section>
 
-      <section className="box" style={{ margin: '12px 16px 0', padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <h2 style={{ fontSize: 18, fontWeight: 800 }}>הכנסות השבוע (ברוטו)</h2>
-          <span className="nowrap" style={{ fontSize: 22, fontWeight: 800, color: 'var(--primary)' }}>{shekelSmart(weekTotal)}</span>
-        </div>
-        <div className="bars">
-          {days.map((d, i) => {
-            const v = liveWeek.get(d) ?? 0;
-            return (
-              <div key={d} className={`bar-row${d === date ? ' on' : ''}`}>
-                <span className="d">{DAY_SHORT[i]}</span>
-                <span className="track">{v > 0 && <span className="fill" style={{ width: `${Math.max(2, (v / maxDay) * 100)}%` }} />}</span>
-                <span className="v">{v > 0 ? shekelSmart(v) : '—'}</span>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {wk && (
+      {ms && (
         <section className="box net-box">
           <div>
-            <span>הכנסות ברוטו</span>
-            <b>{shekelSmart(weekTotal)}</b>
+            <span>הכנסות ברוטו החודש</span>
+            <b>{shekelSmart(monthTotal)}</b>
           </div>
           <div>
-            <span>{wk.mode === 'paid' ? 'פחות: שולם לסוכנים' : 'פחות: סחורה נטו'}</span>
-            <b className="minus">{shekelSmart(-(wk.mode === 'paid' ? wk.paid : wk.goodsCost)).replace('-', '−')}</b>
+            <span>{ms.mode === 'paid' ? 'פחות: שולם לסוכנים' : 'פחות: חשבוניות נטו'}</span>
+            <b className="minus">{shekelSmart(-(ms.mode === 'paid' ? ms.paid : ms.goodsCost)).replace('-', '−')}</b>
           </div>
           <div>
-            <span>פחות: הוצאות</span>
-            <b className="minus">{shekelSmart(-wk.expenses).replace('-', '−')}</b>
+            <span>פחות: הוצאות (קבועות ופועלים)</span>
+            <b className="minus">{shekelSmart(-ms.expenses).replace('-', '−')}</b>
           </div>
           <div className="total">
-            <span>רווח נקי השבוע</span>
-            <b>{shekelSmart(weekTotal - (wk.mode === 'paid' ? wk.paid : wk.goodsCost) - wk.expenses)}</b>
+            <span>רווח נקי החודש</span>
+            <b>{shekelSmart(monthTotal - (ms.mode === 'paid' ? ms.paid : ms.goodsCost) - ms.expenses)}</b>
           </div>
         </section>
       )}

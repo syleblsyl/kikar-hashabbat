@@ -134,11 +134,13 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
     agentMap.set(p.agent_id, a);
   }
 
-  const exp = await query<{ date: string; type: string | null; amount: number; note: string | null }>(
-    `SELECT e.date, t.name AS type, e.amount, e.note FROM expenses e LEFT JOIN expense_types t ON t.id = e.type_id
-      WHERE e.date BETWEEN ? AND ? ORDER BY e.date`,
-    [from, to],
-  );
+  const exp = (
+    await query<{ date: string; type: string | null; amount: number; note: string | null; kind: string; recurring_id: number | null }>(
+      `SELECT e.date, t.name AS type, e.amount, e.note, e.kind, e.recurring_id FROM expenses e LEFT JOIN expense_types t ON t.id = e.type_id
+        WHERE e.date BETWEEN ? AND ? AND e.amount <> 0 ORDER BY e.date`,
+      [from, to],
+    )
+  ).map((e) => ({ ...e, type: e.kind === 'workers' ? 'פועלים' : e.type ? `${e.type}${e.recurring_id ? ' (קבועה)' : ''}` : null }));
   const byTypeMap = new Map<string, number>();
   for (const e of exp) byTypeMap.set(e.type ?? 'ללא סוג', (byTypeMap.get(e.type ?? 'ללא סוג') ?? 0) + num(e.amount));
   const expenses = [...byTypeMap.values()].reduce((a, b) => a + b, 0);

@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { ask } from '../components/Dialog';
 import { canLeave, useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
+import { matches, SearchBox } from '../components/SearchBox';
 import { toast } from '../components/Toast';
 import { SubBar } from '../components/SubBar';
 import { useBack } from '../components/useBack';
@@ -49,6 +50,7 @@ export function ProductEdit() {
   const [cats, setCats] = useState<Category[]>([]);
   const [newCat, setNewCat] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [agentQ, setAgentQ] = useState('');
   const [history, setHistory] = useState<Hist[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [error, setError] = useState('');
@@ -149,7 +151,7 @@ export function ProductEdit() {
       !(await ask({ title: `כבר יש מוצר בשם "${name.trim()}"`, text: 'לשמור בכל זאת מוצר נוסף עם אותו שם?', ok: 'לשמור בכל זאת', cancel: 'לשנות את השם' }))
     )
       return;
-    if (rows.length === 0 && !(await ask({ title: 'לא נבחר סוכן', text: 'בלי סוכן המוצר לא יופיע בקבלת סחורה. לשמור בכל זאת?', ok: 'לשמור בלי סוכן', cancel: 'לבחור סוכן' })))
+    if (rows.length === 0 && !(await ask({ title: 'לא נבחר סוכן', text: 'בלי סוכן המוצר לא יופיע בחשבוניות. לשמור בכל זאת?', ok: 'לשמור בלי סוכן', cancel: 'לבחור סוכן' })))
       return;
     setSaving(true);
     try {
@@ -174,7 +176,7 @@ export function ProductEdit() {
   async function hide() {
     const ok = await ask({
       title: `להסיר את "${name}" מהמחירון?`,
-      text: 'המוצר לא יופיע יותר בקבלת סחורה. שבועות קודמים לא משתנים, ואפשר להחזיר אותו מתחתית המחירון.',
+      text: 'המוצר לא יופיע יותר בחשבוניות חדשות. חשבוניות קודמות לא משתנות, ואפשר להחזיר אותו מתחתית המחירון.',
       ok: 'הסרה',
       danger: true,
     });
@@ -290,7 +292,8 @@ export function ProductEdit() {
           ))}
           {picking ? (
             <div className="chips">
-              {available.map((a) => (
+              {available.length > 6 && <SearchBox value={agentQ} onChange={setAgentQ} placeholder="חיפוש סוכן" className="in-list full" />}
+              {available.filter((a) => matches(a.name, agentQ)).map((a) => (
                 <button key={a.id} type="button" className="chip" onClick={() => addAgent(a)}>
                   <span className="dot" style={{ background: a.color ?? 'var(--primary)' }} />
                   {a.name}

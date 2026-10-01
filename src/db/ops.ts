@@ -1,7 +1,9 @@
 import { query, run, runSet } from './sqlite';
-import { addDays, fromIso, iso, startOfWeek, weekLabel } from '../lib/dates';
+import { addDays, fromIso, iso, startOfWeek } from '../lib/dates';
 
-/* ======================= deliveries ======================= */
+/* ======================= invoices (goods from an agent) ======================= */
+// Stored in the "deliveries" table. Any number per agent; each is either per product (delivery_lines)
+// or one sum (manual_amount). Returns are recorded on the invoice, per product or as one credit sum.
 
 export type Delivery = {
   id: number;
@@ -10,7 +12,7 @@ export type Delivery = {
   delivery_date: string;
   returns_done: number;
   returns_date: string | null;
-  /** set when the delivery was recorded as one sum instead of per product */
+  /** set when the invoice was recorded as one sum instead of per product */
   manual_amount: number | null;
   /** set when the returns were recorded as one credit sum instead of per product */
   manual_credit: number | null;
@@ -28,25 +30,25 @@ export type DeliveryItem = {
   qty_received: number;
   qty_returned: number;
   inLine: boolean;
-  /** quantity that arrived in this agent's previous delivery (0 if none) */
+  /** quantity in this agent's previous invoice (0 if none) */
   prev_qty: number;
 };
 
-export async function getDelivery(agentId: number, weekStart: string): Promise<Delivery | null> {
-  const rows = await query<Delivery>('SELECT * FROM deliveries WHERE agent_id = ? AND week_start = ?', [agentId, weekStart]);
+export async function getInvoice(id: number): Promise<Delivery | null> {
+  const rows = await query<Delivery>('SELECT * FROM deliveries WHERE id = ?', [id]);
   return rows[0] ?? null;
 }
 
 /**
- * Everything the agent supplies (at today's cost) plus anything already recorded in this week's delivery
- * (at the cost that was saved then — later price changes never rewrite old weeks).
+ * Everything the agent supplies (at today's cost) plus anything already in this invoice
+ * (at the cost that was saved then — later price changes never rewrite old invoices).
  */
-export async function deliveryItems(agentId: number, weekStart: string): Promise<DeliveryItem[]> {
-  const d = await getDelivery(agentId, weekStart);
-  const lines = d
+export async function invoiceItems(agentId: number, invoiceId: number | null): Promise<DeliveryItem[]> {
+  const inv = invoiceId ? await getInvoice(invoiceId) : null;
+  const lines = inv
     ? await query<{ product_id: number; unit_cost: number; returnable: number; qty_received: number; qty_returned: number }>(
         'SELECT product_id, unit_cost, returnable, qty_received, qty_returned FROM delivery_lines WHERE delivery_id = ?',
-        [d.id],
+        [inv.id],
       )
     : [];
   const current = await query<{ product_id: number; cost_price: number; returnable: number }>(
@@ -55,10 +57,13 @@ export async function deliveryItems(agentId: number, weekStart: string): Promise
       WHERE ap.agent_id = ? AND ap.active = 1 AND p.active = 1`,
     [agentId],
   );
+  // the agent's previous invoice that was recorded per product
   const prevRows = await query<{ product_id: number; qty_received: number }>(
     `SELECT l.product_id, l.qty_received FROM delivery_lines l
-      WHERE l.delivery_id = (SELECT id FROM deliveries WHERE agent_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1)`,
-    [agentId, weekStart],
+      WHERE l.delivery_id = (SELECT d.id FROM deliveries d
+                              WHERE d.agent_id = ? AND d.id <> ? AND d.manual_amount IS NULL AND d.delivery_date <= ?
+                              ORDER BY d.delivery_date DESC, d.id DESC LIMIT 1)`,
+    [agentId, inv?.id ?? 0, inv?.delivery_date ?? '9999-12-31'],
   );
   const prev = new Map(prevRows.map((r) => [r.product_id, Number(r.qty_received)]));
   const ids = new Set<number>([...current.map((c) => c.product_id), ...lines.map((l) => l.product_id)]);
@@ -90,25 +95,21 @@ export async function deliveryItems(agentId: number, weekStart: string): Promise
   return items.map(({ sort: _s, ...rest }) => rest);
 }
 
-function checkWeek(weekStart: string, date: string) {
-  const end = iso(addDays(fromIso(weekStart), 6));
-  if (date < weekStart || date > end) throw new Error('date-outside-week');
-}
-
-/** Saves the quantities that arrived. Lines at 0 are removed; an empty delivery is removed. */
-export async function saveDelivery(agentId: number, weekStart: string, deliveryDate: string, items: DeliveryItem[]) {
-  checkWeek(weekStart, deliveryDate);
-  let d = await getDelivery(agentId, weekStart);
+/** Saves an invoice per product. Lines at 0 are removed; an invoice left empty is removed. Returns its id (0 if removed). */
+export async function saveInvoiceItems(invoiceId: number | null, agentId: number, date: string, items: DeliveryItem[]): Promise<number> {
   const withQty = items.filter((i) => i.qty_received > 0);
-  if (!d && withQty.length === 0) return;
-  if (!d) {
-    await run('INSERT INTO deliveries (agent_id, week_start, delivery_date) VALUES (?, ?, ?)', [agentId, weekStart, deliveryDate]);
-    d = await getDelivery(agentId, weekStart);
+  let id = invoiceId ?? 0;
+  if (!id) {
+    if (withQty.length === 0) return 0;
+    const res = await run('INSERT INTO deliveries (agent_id, week_start, delivery_date) VALUES (?, ?, ?)', [agentId, iso(startOfWeek(fromIso(date))), date]);
+    id = res.lastId;
   }
-  if (!d) throw new Error('delivery not created');
   const set: { statement: string; values?: unknown[] }[] = [
     // per product from now on (a sum entered before is replaced, and so is a credit sum)
-    { statement: 'UPDATE deliveries SET delivery_date = ?, manual_amount = NULL, manual_credit = NULL WHERE id = ?', values: [deliveryDate, d.id] },
+    {
+      statement: 'UPDATE deliveries SET agent_id = ?, delivery_date = ?, week_start = ?, manual_amount = NULL, manual_credit = NULL WHERE id = ?',
+      values: [agentId, date, iso(startOfWeek(fromIso(date))), id],
+    },
   ];
   for (const i of items) {
     if (i.qty_received > 0) {
@@ -117,48 +118,57 @@ export async function saveDelivery(agentId: number, weekStart: string, deliveryD
                     VALUES (?, ?, ?, 0, ?, ?)
                     ON CONFLICT(delivery_id, product_id) DO UPDATE SET qty_received = excluded.qty_received,
                       qty_returned = MIN(delivery_lines.qty_returned, excluded.qty_received)`,
-        values: [d.id, i.product_id, i.qty_received, i.unit_cost, i.returnable],
+        values: [id, i.product_id, i.qty_received, i.unit_cost, i.returnable],
       });
     } else if (i.inLine) {
-      set.push({ statement: 'DELETE FROM delivery_lines WHERE delivery_id = ? AND product_id = ?', values: [d.id, i.product_id] });
+      set.push({ statement: 'DELETE FROM delivery_lines WHERE delivery_id = ? AND product_id = ?', values: [id, i.product_id] });
     }
   }
-  if (withQty.length === 0) set.push({ statement: 'DELETE FROM deliveries WHERE id = ?', values: [d.id] });
+  if (withQty.length === 0) {
+    set.push({ statement: 'DELETE FROM delivery_lines WHERE delivery_id = ?', values: [id] });
+    set.push({ statement: 'DELETE FROM deliveries WHERE id = ?', values: [id] });
+  }
   await runSet(set);
+  return withQty.length === 0 ? 0 : id;
 }
 
-/** Saves a delivery as one sum (what I owe the agent for it), without products. 0 removes it. */
-export async function saveDeliveryAmount(agentId: number, weekStart: string, deliveryDate: string, amount: number, note: string, returnable: boolean) {
-  checkWeek(weekStart, deliveryDate);
-  const d = await getDelivery(agentId, weekStart);
-  if (amount <= 0) {
-    if (d) await deleteDelivery(d.id);
-    return;
-  }
-  if (!d) {
-    await run(
+/** Saves an invoice as one sum (what I owe the agent for it), without products. Returns its id. */
+export async function saveInvoiceAmount(
+  invoiceId: number | null,
+  agentId: number,
+  date: string,
+  amount: number,
+  note: string,
+  returnable: boolean,
+): Promise<number> {
+  const week = iso(startOfWeek(fromIso(date)));
+  const inv = invoiceId ? await getInvoice(invoiceId) : null;
+  if (!inv) {
+    const res = await run(
       'INSERT INTO deliveries (agent_id, week_start, delivery_date, manual_amount, manual_returnable, note, returns_done) VALUES (?, ?, ?, ?, ?, ?, 0)',
-      [agentId, weekStart, deliveryDate, amount, returnable ? 1 : 0, note.trim() || null],
+      [agentId, week, date, amount, returnable ? 1 : 0, note.trim() || null],
     );
-    return;
+    return res.lastId;
   }
   // returns already recorded per product keep their value as a credit sum (the product lines go away)
-  const [t] = await query<{ credit: number }>('SELECT credit FROM delivery_totals WHERE id = ?', [d.id]);
-  const credit = d.returns_done ? Math.min(Number(t?.credit ?? 0), amount) : null;
+  const [t] = await query<{ credit: number }>('SELECT credit FROM delivery_totals WHERE id = ?', [inv.id]);
+  const credit = inv.returns_done ? Math.min(Number(t?.credit ?? 0), amount) : null;
   await runSet([
-    { statement: 'DELETE FROM delivery_lines WHERE delivery_id = ?', values: [d.id] },
+    { statement: 'DELETE FROM delivery_lines WHERE delivery_id = ?', values: [inv.id] },
     {
-      statement: 'UPDATE deliveries SET delivery_date = ?, manual_amount = ?, manual_returnable = ?, note = ?, manual_credit = ? WHERE id = ?',
-      values: [deliveryDate, amount, returnable ? 1 : 0, note.trim() || null, credit, d.id],
+      statement:
+        'UPDATE deliveries SET agent_id = ?, delivery_date = ?, week_start = ?, manual_amount = ?, manual_returnable = ?, note = ?, manual_credit = ? WHERE id = ?',
+      values: [agentId, date, week, amount, returnable ? 1 : 0, note.trim() || null, credit, inv.id],
     },
   ]);
+  return inv.id;
 }
 
-/** How this agent's previous delivery was recorded, to open the screen the same way. */
-export async function lastDeliveryOf(agentId: number, beforeWeek: string): Promise<{ manual: boolean; received: number; returnable: boolean } | null> {
+/** How this agent's previous invoice was recorded, to open a new one the same way. */
+export async function lastInvoiceOf(agentId: number, exceptId = 0): Promise<{ manual: boolean; received: number; returnable: boolean } | null> {
   const [r] = await query<{ manual_amount: number | null; received: number; manual_returnable: number }>(
-    'SELECT manual_amount, received, manual_returnable FROM delivery_totals WHERE agent_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
-    [agentId, beforeWeek],
+    'SELECT manual_amount, received, manual_returnable FROM delivery_totals WHERE agent_id = ? AND id <> ? ORDER BY delivery_date DESC, id DESC LIMIT 1',
+    [agentId, exceptId],
   );
   return r ? { manual: r.manual_amount != null, received: Number(r.received), returnable: !!Number(r.manual_returnable) } : null;
 }
@@ -175,10 +185,58 @@ export async function deleteDelivery(id: number) {
   ]);
 }
 
-/** Agent ids that already have a delivery in the week. */
-export async function deliveredAgents(weekStart: string): Promise<Set<number>> {
-  const rows = await query<{ agent_id: number }>('SELECT agent_id FROM deliveries WHERE week_start = ?', [weekStart]);
-  return new Set(rows.map((r) => r.agent_id));
+export type InvoiceRow = {
+  id: number;
+  agent_id: number;
+  agent: string;
+  color: string | null;
+  date: string;
+  received: number;
+  credit: number;
+  lines: number;
+  manual: boolean;
+  note: string | null;
+  returns_done: boolean;
+  returnable: boolean;
+};
+
+const INVOICE_ROW_SQL = `SELECT t.id, t.agent_id, a.name AS agent, a.color, t.delivery_date AS date, t.received, t.credit, t.lines,
+        t.manual_amount, t.note, t.returns_done, t.returnable_lines
+   FROM delivery_totals t JOIN agents a ON a.id = t.agent_id`;
+
+type InvoiceSqlRow = {
+  id: number;
+  agent_id: number;
+  agent: string;
+  color: string | null;
+  date: string;
+  received: number;
+  credit: number;
+  lines: number;
+  manual_amount: number | null;
+  note: string | null;
+  returns_done: number;
+  returnable_lines: number;
+};
+
+const toInvoiceRow = (r: InvoiceSqlRow): InvoiceRow => ({
+  id: r.id,
+  agent_id: r.agent_id,
+  agent: r.agent,
+  color: r.color,
+  date: r.date,
+  received: Number(r.received),
+  credit: Number(r.credit),
+  lines: Number(r.lines),
+  manual: r.manual_amount != null,
+  note: r.note,
+  returns_done: !!Number(r.returns_done),
+  returnable: Number(r.returnable_lines) > 0,
+});
+
+export async function invoicesBetween(from: string, to: string): Promise<InvoiceRow[]> {
+  const rows = await query<InvoiceSqlRow>(`${INVOICE_ROW_SQL} WHERE t.delivery_date BETWEEN ? AND ? ORDER BY t.delivery_date DESC, t.id DESC`, [from, to]);
+  return rows.map(toInvoiceRow);
 }
 
 /* ======================= returns ======================= */
@@ -192,7 +250,7 @@ export type ReturnsAgent = {
   returns_done: number;
   returns_date: string | null;
   items: DeliveryItem[];
-  /** the delivery was one sum (no products), so returns can only be a sum too */
+  /** the invoice was one sum (no products), so returns can only be a sum too */
   manual_amount: number | null;
   /** the returns were recorded as one credit sum */
   manual_credit: number | null;
@@ -203,8 +261,8 @@ export type ReturnsAgent = {
   note: string | null;
 };
 
-export async function returnsForWeek(weekStart: string): Promise<ReturnsAgent[]> {
-  const ds = await query<{
+export async function returnsForInvoice(id: number): Promise<ReturnsAgent | null> {
+  const [d] = await query<{
     id: number;
     agent_id: number;
     name: string;
@@ -221,31 +279,27 @@ export async function returnsForWeek(weekStart: string): Promise<ReturnsAgent[]>
   }>(
     `SELECT t.id, t.agent_id, a.name, a.color, t.delivery_date, t.returns_done, t.returns_date,
             t.manual_amount, t.manual_credit, t.received, t.credit, t.returnable_lines, t.note
-       FROM delivery_totals t JOIN agents a ON a.id = t.agent_id
-      WHERE t.week_start = ? ORDER BY t.returns_done, a.name`,
-    [weekStart],
+       FROM delivery_totals t JOIN agents a ON a.id = t.agent_id WHERE t.id = ?`,
+    [id],
   );
-  const out: ReturnsAgent[] = [];
-  for (const d of ds) {
-    const items = d.manual_amount != null ? [] : (await deliveryItems(d.agent_id, weekStart)).filter((i) => i.inLine);
-    out.push({
-      delivery_id: d.id,
-      agent_id: d.agent_id,
-      name: d.name,
-      color: d.color,
-      delivery_date: d.delivery_date,
-      returns_done: d.returns_done,
-      returns_date: d.returns_date,
-      items,
-      manual_amount: d.manual_amount == null ? null : Number(d.manual_amount),
-      manual_credit: d.manual_credit == null ? null : Number(d.manual_credit),
-      received: Number(d.received),
-      credit: Number(d.credit),
-      returnable: Number(d.returnable_lines) > 0,
-      note: d.note,
-    });
-  }
-  return out;
+  if (!d) return null;
+  const items = d.manual_amount != null ? [] : (await invoiceItems(d.agent_id, d.id)).filter((i) => i.inLine);
+  return {
+    delivery_id: d.id,
+    agent_id: d.agent_id,
+    name: d.name,
+    color: d.color,
+    delivery_date: d.delivery_date,
+    returns_done: d.returns_done,
+    returns_date: d.returns_date,
+    items,
+    manual_amount: d.manual_amount == null ? null : Number(d.manual_amount),
+    manual_credit: d.manual_credit == null ? null : Number(d.manual_credit),
+    received: Number(d.received),
+    credit: Number(d.credit),
+    returnable: Number(d.returnable_lines) > 0,
+    note: d.note,
+  };
 }
 
 export async function saveReturns(deliveryId: number, returnsDate: string, items: { product_id: number; qty_returned: number }[]) {
@@ -266,21 +320,19 @@ export async function saveReturnsAmount(deliveryId: number, returnsDate: string,
   ]);
 }
 
-/** Weeks before the current one that still wait for returns, most recent first. */
-export async function pendingReturnsWeeks(): Promise<{ week: string; agents: number }[]> {
-  const current = iso(startOfWeek(new Date()));
-  const rows = await query<{ week_start: string; n: number }>(
-    `SELECT t.week_start, COUNT(*) AS n FROM delivery_totals t
-      WHERE t.returns_done = 0 AND t.week_start < ? AND t.returnable_lines > 0 AND t.received > 0
-      GROUP BY t.week_start ORDER BY t.week_start DESC`,
-    [current],
+/**
+ * Invoices still waiting for returns, oldest first. Agents collect on Sunday, so an invoice is due
+ * from the Sunday after it (`dueOnly`); otherwise every open one is listed.
+ */
+export async function pendingReturnInvoices(dueOnly = true): Promise<InvoiceRow[]> {
+  const before = dueOnly ? iso(startOfWeek(new Date())) : '9999-12-31';
+  const rows = await query<InvoiceSqlRow>(
+    `${INVOICE_ROW_SQL}
+      WHERE t.returns_done = 0 AND t.returnable_lines > 0 AND t.received > 0 AND t.delivery_date < ?
+      ORDER BY t.delivery_date, a.name`,
+    [before],
   );
-  return rows.map((r) => ({ week: r.week_start, agents: Number(r.n) }));
-}
-
-/** The week the returns screen should open on: the latest week still waiting (agents collect on Sunday). */
-export async function pendingReturnsWeek(): Promise<string | null> {
-  return (await pendingReturnsWeeks())[0]?.week ?? null;
+  return rows.map(toInvoiceRow);
 }
 
 /* ======================= payment methods & income ======================= */
@@ -356,7 +408,18 @@ export async function incomeByMethod(from: string, to: string): Promise<{ id: nu
 /* ======================= expenses ======================= */
 
 export type ExpenseType = { id: number; name: string; sort: number; active: number };
-export type Expense = { id: number; date: string; type_id: number | null; type: string | null; amount: number; note: string | null };
+export type ExpenseKind = 'general' | 'workers';
+export type Expense = {
+  id: number;
+  date: string;
+  type_id: number | null;
+  type: string | null;
+  amount: number;
+  note: string | null;
+  /** the fixed monthly expense this month's row came from */
+  recurring_id: number | null;
+  kind: ExpenseKind;
+};
 
 export async function listExpenseTypes(includeHidden = false): Promise<ExpenseType[]> {
   return query<ExpenseType>(`SELECT * FROM expense_types ${includeHidden ? '' : 'WHERE active = 1'} ORDER BY sort, id`);
@@ -376,26 +439,100 @@ export async function setExpenseTypeActive(id: number, active: boolean) {
   await run('UPDATE expense_types SET active = ? WHERE id = ?', [active ? 1 : 0, id]);
 }
 
-export async function listExpenses(from: string, to: string): Promise<Expense[]> {
+export async function listExpenses(from: string, to: string, kind?: ExpenseKind): Promise<Expense[]> {
   const rows = await query<Expense>(
-    `SELECT e.id, e.date, e.type_id, t.name AS type, e.amount, e.note
+    `SELECT e.id, e.date, e.type_id, t.name AS type, e.amount, e.note, e.recurring_id, e.kind
        FROM expenses e LEFT JOIN expense_types t ON t.id = e.type_id
-      WHERE e.date BETWEEN ? AND ? ORDER BY e.date DESC, e.id DESC`,
-    [from, to],
+      WHERE e.date BETWEEN ? AND ? ${kind ? 'AND e.kind = ?' : ''}
+      ORDER BY e.date DESC, e.id DESC`,
+    kind ? [from, to, kind] : [from, to],
   );
-  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+  return rows.map((r) => ({ ...r, amount: Number(r.amount), kind: r.kind === 'workers' ? 'workers' : 'general' }));
 }
 
-export async function saveExpense(e: { id?: number; date: string; type_id: number | null; amount: number; note: string }) {
+export async function saveExpense(e: { id?: number; date: string; type_id: number | null; amount: number; note: string; kind?: ExpenseKind }) {
   if (e.id) {
     await run('UPDATE expenses SET date = ?, type_id = ?, amount = ?, note = ? WHERE id = ?', [e.date, e.type_id, e.amount, e.note.trim(), e.id]);
   } else {
-    await run('INSERT INTO expenses (date, type_id, amount, note) VALUES (?, ?, ?, ?)', [e.date, e.type_id, e.amount, e.note.trim()]);
+    await run('INSERT INTO expenses (date, type_id, amount, note, kind) VALUES (?, ?, ?, ?, ?)', [e.date, e.type_id, e.amount, e.note.trim(), e.kind ?? 'general']);
   }
 }
 
 export async function deleteExpense(id: number) {
   await run('DELETE FROM expenses WHERE id = ?', [id]);
+}
+
+/* ---------- fixed monthly expenses ---------- */
+// A fixed expense (rent…) is a template; every month gets its own row in "expenses", dated the 1st,
+// so each month starts already minus its fixed costs. Months are "yyyy-mm".
+
+export type Recurring = { id: number; type_id: number | null; type: string | null; amount: number; note: string | null; start_month: string; end_month: string | null };
+
+export const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+const nextMonth = (m: string) => {
+  const [y, mo] = m.split('-').map(Number);
+  return monthKey(new Date(y, mo, 1));
+};
+const prevMonth = (m: string) => {
+  const [y, mo] = m.split('-').map(Number);
+  return monthKey(new Date(y, mo - 2, 1));
+};
+
+export async function listRecurring(): Promise<Recurring[]> {
+  const rows = await query<Recurring>(
+    `SELECT r.id, r.type_id, t.name AS type, r.amount, r.note, r.start_month, r.end_month
+       FROM recurring_expenses r LEFT JOIN expense_types t ON t.id = r.type_id
+      ORDER BY (r.end_month IS NOT NULL), r.amount DESC`,
+  );
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+}
+
+/** Creates the month rows that are missing, from each fixed expense's first month up to this month. Safe to call any time. */
+export async function ensureRecurring(): Promise<void> {
+  const now = monthKey(new Date());
+  const templates = await query<Recurring>('SELECT * FROM recurring_expenses');
+  if (templates.length === 0) return;
+  const have = await query<{ recurring_id: number; m: string }>(
+    "SELECT recurring_id, substr(date, 1, 7) AS m FROM expenses WHERE recurring_id IS NOT NULL",
+  );
+  const exists = new Set(have.map((h) => `${h.recurring_id}:${h.m}`));
+  const set: { statement: string; values?: unknown[] }[] = [];
+  for (const t of templates) {
+    const last = t.end_month && t.end_month < now ? t.end_month : now;
+    for (let m = t.start_month; m <= last; m = nextMonth(m)) {
+      if (exists.has(`${t.id}:${m}`)) continue;
+      set.push({
+        statement: "INSERT INTO expenses (date, type_id, amount, note, recurring_id, kind) VALUES (?, ?, ?, ?, ?, 'general')",
+        values: [`${m}-01`, t.type_id, t.amount, t.note ?? '', t.id],
+      });
+    }
+  }
+  if (set.length) await runSet(set);
+}
+
+/** A new fixed monthly expense, starting in `startMonth`. */
+export async function addRecurring(r: { type_id: number | null; amount: number; note: string; startMonth: string }) {
+  await run('INSERT INTO recurring_expenses (type_id, amount, note, start_month) VALUES (?, ?, ?, ?)', [r.type_id, r.amount, r.note.trim() || null, r.startMonth]);
+  await ensureRecurring();
+}
+
+/** Changes a fixed expense from `fromMonth` on (that month and later rows change too, earlier months stay as they were). */
+export async function updateRecurringFrom(id: number, fromMonth: string, r: { type_id: number | null; amount: number; note: string }) {
+  await runSet([
+    { statement: 'UPDATE recurring_expenses SET type_id = ?, amount = ?, note = ? WHERE id = ?', values: [r.type_id, r.amount, r.note.trim() || null, id] },
+    {
+      statement: 'UPDATE expenses SET type_id = ?, amount = ?, note = ? WHERE recurring_id = ? AND date >= ?',
+      values: [r.type_id, r.amount, r.note.trim(), id, `${fromMonth}-01`],
+    },
+  ]);
+}
+
+/** Stops a fixed expense: `fromMonth` and later no longer get it (their rows are removed). */
+export async function stopRecurring(id: number, fromMonth: string) {
+  await runSet([
+    { statement: 'UPDATE recurring_expenses SET end_month = ? WHERE id = ?', values: [prevMonth(fromMonth), id] },
+    { statement: 'DELETE FROM expenses WHERE recurring_id = ? AND date >= ?', values: [id, `${fromMonth}-01`] },
+  ]);
 }
 
 /* ======================= agent payments, ledger, balance ======================= */
@@ -455,18 +592,19 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
   );
   const out: LedgerEntry[] = [];
   for (const d of ds) {
-    const wl = weekLabel(fromIso(d.week_start));
+    const dd = fromIso(d.delivery_date);
+    const from = `${dd.getDate()}.${dd.getMonth() + 1}`;
     out.push({
       key: `d${d.id}`,
       kind: 'delivery',
       id: d.id,
       date: d.delivery_date,
       amount: Number(d.received),
-      title: 'אספקה',
+      title: 'חשבונית',
       sub:
         d.manual_amount != null
-          ? `שבוע ${wl} · לפי סכום${d.note ? ` · ${d.note}` : ''}`
-          : `שבוע ${wl} · ${Number(d.lines) === 1 ? 'מוצר אחד' : `${d.lines} מוצרים`}`,
+          ? `לפי סכום${d.note ? ` · ${d.note}` : ''}`
+          : `${Number(d.lines) === 1 ? 'מוצר אחד' : `${d.lines} מוצרים`}${d.note ? ` · ${d.note}` : ''}`,
       manual: d.manual_amount != null,
       note: d.note,
       pendingReturns: !d.returns_done && Number(d.returnable) > 0,
@@ -481,7 +619,7 @@ export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
         date: d.returns_date ?? d.delivery_date,
         amount: -Number(d.credit),
         title: 'החזרות',
-        sub: d.manual_credit != null ? `שבוע ${wl} · זיכוי לפי סכום` : `שבוע ${wl}`,
+        sub: `על חשבונית מ-${from}${d.manual_credit != null ? ' · זיכוי לפי סכום' : ''}`,
         manual: d.manual_credit != null,
         weekStart: d.week_start,
         balance: 0,
@@ -528,7 +666,7 @@ export type Statement = {
   delivered: number;
   credit: number;
   paid: number;
-  /** weeks whose returns are not recorded yet (the balance will still go down) */
+  /** dates of invoices whose returns are not recorded yet (the balance will still go down) */
   pendingWeeks: string[];
   lastPayment: { date: string; amount: number } | null;
 };
@@ -593,7 +731,7 @@ export async function agentStatement(agentId: number, range: StatementRange): Pr
     delivered: sum('delivery'),
     credit: sum('returns'),
     paid: sum('payment'),
-    pendingWeeks: all.filter((e) => e.pendingReturns && e.weekStart).map((e) => e.weekStart!),
+    pendingWeeks: all.filter((e) => e.pendingReturns).map((e) => e.date),
     lastPayment: last ? { date: last.date, amount: -last.amount } : null,
   };
 }
@@ -629,7 +767,7 @@ export async function paymentConfirmation(paymentId: number): Promise<PaymentCon
     before: Math.round((e.balance - e.amount) * 100) / 100,
     after: e.balance,
     now: ledger[0]?.balance ?? 0,
-    pendingWeeks: ledger.filter((x) => x.pendingReturns && x.weekStart && x.date <= e.date).map((x) => x.weekStart!),
+    pendingWeeks: ledger.filter((x) => x.pendingReturns && x.date <= e.date).map((x) => x.date),
   };
 }
 

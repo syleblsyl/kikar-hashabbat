@@ -1,7 +1,7 @@
 import type { Agent } from '../db/catalog';
 import type { PaymentConfirmation, Statement, StatementRow } from '../db/ops';
 import { fromIso, today } from '../lib/dates';
-import { hebDate, weekInfo } from '../lib/hebrew';
+import { hebDate } from '../lib/hebrew';
 import { qty, shekelCents, shekelSmart } from '../lib/money';
 
 /* Documents that are sent to the agent (picture / PDF), written from the store's side. */
@@ -126,17 +126,12 @@ export function StatementDoc({ agent, st, details }: { agent: Agent; st: Stateme
             <span>{shortD(r.date)}</span>
             <span className="what">
               <b>
-                {r.kind === 'delivery' ? 'סחורה' : r.kind === 'returns' ? 'החזרות' : 'תשלום'}
-                {r.weekStart ? ` · ${weekInfo(fromIso(r.weekStart)).title}` : ''}
+                {r.kind === 'delivery' ? 'חשבונית' : r.kind === 'returns' ? 'החזרות' : 'תשלום'}
                 {r.kind === 'payment' && r.method ? ` · ${r.method}` : ''}
               </b>
               {r.kind === 'payment' && r.note && <small>{r.note}</small>}
-              {r.kind !== 'payment' && r.manual && (
-                <small>
-                  {r.kind === 'delivery' ? 'סכום כולל, בלי פירוט מוצרים' : 'זיכוי לפי סכום'}
-                  {r.kind === 'delivery' && r.note ? ` · ${r.note}` : ''}
-                </small>
-              )}
+              {r.kind === 'delivery' && <small>{r.manual ? `סכום כולל, בלי פירוט מוצרים${r.note ? ` · ${r.note}` : ''}` : r.sub}</small>}
+              {r.kind === 'returns' && <small>{r.sub}</small>}
               {r.pendingReturns && <small className="warn">החזרות עוד לא נרשמו</small>}
               {details && <RowLines r={r} />}
             </span>
@@ -150,7 +145,7 @@ export function StatementDoc({ agent, st, details }: { agent: Agent; st: Stateme
 
       {st.pendingWeeks.length > 0 && (
         <p className="doc-note">
-          שימו לב: בשבוע {st.pendingWeeks.map((w) => weekInfo(fromIso(w)).title).join(', ')} ההחזרות עוד לא נרשמו. אחרי הרישום היתרה תרד בסכום הזיכוי.
+          שימו לב: בחשבוניות מ-{st.pendingWeeks.map((w) => shortD(w)).join(', ')} ההחזרות עוד לא נרשמו. אחרי הרישום היתרה תרד בסכום הזיכוי.
         </p>
       )}
       <p className="doc-note">
@@ -236,7 +231,7 @@ export function statementText(agent: Agent, st: Statement) {
     `תשלומים: ${plain(shekelSmart(st.paid))}`,
     `*${end.label}: ${plain(shekelSmart(Math.abs(st.closing)))}*`,
   ];
-  if (st.pendingWeeks.length) lines.push('', 'ההחזרות של השבוע האחרון עוד לא נרשמו, אחריהן היתרה תרד.');
+  if (st.pendingWeeks.length) lines.push('', 'בחלק מהחשבוניות ההחזרות עוד לא נרשמו, אחריהן היתרה תרד.');
   lines.push('', 'אם משהו לא מסתדר – נבדוק יחד לפני התשלום. תודה!');
   return lines.join('\n');
 }

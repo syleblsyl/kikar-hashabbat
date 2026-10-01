@@ -25,6 +25,7 @@ async function migrate(conn: SQLiteDBConnection) {
   const res = await conn.query('PRAGMA user_version;');
   const current = Number(res.values?.[0]?.user_version ?? 0);
   if (current > MIGRATIONS.length) throw new Error('database-newer-than-app');
+  if (current === MIGRATIONS.length) return;
   for (let v = current; v < MIGRATIONS.length; v++) {
     // the version bump runs inside the same transaction, so a killed app never half-applies a step
     await conn.execute(`${MIGRATIONS[v]}\nPRAGMA user_version = ${v + 1};\n`, true);
@@ -39,8 +40,8 @@ async function openDb(): Promise<SQLiteDBConnection> {
     ? await sqlite.retrieveConnection(DB_NAME, false)
     : await sqlite.createConnection(DB_NAME, false, 'no-encryption', 1, false);
   await conn.open();
-  await conn.execute('PRAGMA foreign_keys = ON;', false);
   await migrate(conn);
+  await conn.execute('PRAGMA foreign_keys = ON;', false);
   await persist();
   return conn;
 }

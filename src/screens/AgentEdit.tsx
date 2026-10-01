@@ -121,7 +121,7 @@ export function AgentEdit() {
           <div className="banner gold" style={{ margin: 0 }}>
             <span className="txt">
               <b>הסוכן מוסתר</b>
-              <span>הוא לא מופיע ברשימות ובקבלת סחורה</span>
+              <span>הוא לא מופיע ברשימות ובחשבוניות</span>
             </span>
             <button type="button" className="btn small" style={{ width: 'auto', padding: '0 14px' }} onClick={restore}>החזרה</button>
           </div>

@@ -1,33 +1,57 @@
 import { useEffect, useState } from 'react';
-import { ask, askText } from '../components/Dialog';
+import { useSearchParams } from 'react-router-dom';
+import { ask, askText, choose } from '../components/Dialog';
 import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
+import { MonthBar, parseYM, sameYM, thisMonth, ymKey, type YM } from '../components/MonthBar';
+import { matches, SearchBox } from '../components/SearchBox';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
-import { addExpenseType, deleteExpense, listExpenses, listExpenseTypes, saveExpense, type Expense, type ExpenseType } from '../db/ops';
-import { fromIso, iso, MONTHS, shortDate, today } from '../lib/dates';
+import {
+  addExpenseType,
+  addRecurring,
+  deleteExpense,
+  ensureRecurring,
+  listExpenses,
+  listExpenseTypes,
+  saveExpense,
+  stopRecurring,
+  updateRecurringFrom,
+  type Expense,
+  type ExpenseType,
+} from '../db/ops';
+import { monthRange } from '../db/repo';
+import { DAY_SHORT, fromIso, iso, MONTHS, shortDate, today } from '../lib/dates';
 import { parseAmountStrict, shekelSmart } from '../lib/money';
 
+type Tab = 'fixed' | 'workers';
+
+/** Fixed monthly expenses (repeat by themselves every month) and workers (paid when needed). */
 export function Expenses() {
-  const now = today();
-  const [month, setMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
+  const [params, setParams] = useSearchParams();
+  const ym: YM = parseYM(params.get('month')) ?? thisMonth();
+  const tab: Tab = params.get('tab') === 'workers' ? 'workers' : 'fixed';
   const [types, setTypes] = useState<ExpenseType[]>([]);
   const [list, setList] = useState<Expense[]>([]);
-  const [editId, setEditId] = useState<number | null>(null);
-  const [date, setDate] = useState(iso(now));
-  const [typeId, setTypeId] = useState<number | null>(null);
+  const [editing, setEditing] = useState<Expense | null>(null);
   const [amount, setAmount] = useState('');
+  const [typeId, setTypeId] = useState<number | null>(null);
   const [note, setNote] = useState('');
+  const [recurring, setRecurring] = useState(true);
+  const [date, setDate] = useState(iso(today()));
+  const [q, setQ] = useState('');
   const [saving, setSaving] = useState(false);
-
-  const [orig, setOrig] = useState({ amount: '', note: '' });
   const parsed = parseAmountStrict(amount);
-  useLeaveGuard(amount !== orig.amount || note !== orig.note);
+  const isCurrent = sameYM(ym, thisMonth());
+  const defaultDate = isCurrent ? iso(today()) : iso(new Date(ym.y, ym.m, 1));
 
-  const from = iso(month);
-  const to = iso(new Date(month.getFullYear(), month.getMonth() + 1, 0));
+  useLeaveGuard(amount.trim() !== '' && !editing ? true : !!editing && (amount !== String(editing.amount) || note !== (editing.note ?? '')));
 
-  const load = async () => setList(await listExpenses(from, to));
+  async function load() {
+    await ensureRecurring();
+    const { from, to } = monthRange(ym.y, ym.m);
+    setList(await listExpenses(from, to));
+  }
 
   useEffect(() => {
     listExpenseTypes().then((t) => {
@@ -38,18 +62,37 @@ export function Expenses() {
 
   useEffect(() => {
     load();
-  }, [from]);
+    reset();
+  }, [ym.y, ym.m]);
+
+  function go(next: { ym?: YM; tab?: Tab }) {
+    const p = new URLSearchParams(params);
+    if (next.ym) p.set('month', ymKey(next.ym));
+    if (next.tab) p.set('tab', next.tab);
+    setParams(p, { replace: true });
+    reset();
+  }
 
   function reset() {
-    setEditId(null);
+    setEditing(null);
     setAmount('');
     setNote('');
-    setOrig({ amount: '', note: '' });
-    setDate(iso(today()));
+    setRecurring(true);
+    setDate(defaultDate);
+  }
+
+  function edit(e: Expense) {
+    setEditing(e);
+    setAmount(String(e.amount));
+    setNote(e.note && e.note !== 'בוטל לחודש הזה' ? e.note : '');
+    setTypeId(e.type_id);
+    setDate(e.date);
+    setRecurring(e.recurring_id != null);
+    document.querySelector('.screen')?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function newType() {
-    const name = await askText({ title: 'סוג הוצאה חדש', placeholder: 'למשל: שכירות, חשמל, ניקיון', ok: 'הוספה' });
+    const name = await askText({ title: 'סוג הוצאה חדש', placeholder: 'למשל: שכירות, חשמל, ארנונה', ok: 'הוספה' });
     if (!name) return;
     const all = await listExpenseTypes(true);
     const same = all.find((t) => t.name.trim() === name);
@@ -64,16 +107,38 @@ export function Expenses() {
   }
 
   async function save() {
-    if (parsed === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 350 או 12.50', 'err');
+    if (parsed === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 3500 או 120.50', 'err');
     if (parsed <= 0) return toast('צריך לכתוב סכום', 'err');
     setSaving(true);
     try {
-      await saveExpense({ id: editId ?? undefined, date, type_id: typeId, amount: parsed, note });
-      toast(editId ? 'ההוצאה עודכנה' : `נשמרה הוצאה של ${shekelSmart(parsed)}`);
-      const d = fromIso(date);
+      const month = ymKey(ym);
+      if (tab === 'workers') {
+        await saveExpense({ id: editing?.id, date, type_id: null, amount: parsed, note, kind: 'workers' });
+        toast(editing ? 'עודכן' : `נרשם לפועלים: ${shekelSmart(parsed)}`);
+      } else if (editing?.recurring_id) {
+        const how = await choose({
+          title: 'לשנות את ההוצאה הקבועה?',
+          options: [
+            { label: `רק ב${MONTHS[ym.m]}`, value: 'one' },
+            { label: `מ${MONTHS[ym.m]} והלאה (כל החודשים הבאים)`, value: 'on' },
+          ],
+        });
+        if (!how) return setSaving(false);
+        if (how === 'one') await saveExpense({ id: editing.id, date: editing.date, type_id: typeId, amount: parsed, note });
+        else await updateRecurringFrom(editing.recurring_id, month, { type_id: typeId, amount: parsed, note });
+        toast('ההוצאה עודכנה');
+      } else if (editing) {
+        await saveExpense({ id: editing.id, date, type_id: typeId, amount: parsed, note });
+        toast('ההוצאה עודכנה');
+      } else if (recurring) {
+        await addRecurring({ type_id: typeId, amount: parsed, note, startMonth: month });
+        toast(`נוספה הוצאה קבועה: ${shekelSmart(parsed)} בכל חודש, החל מ${MONTHS[ym.m]}`);
+      } else {
+        await saveExpense({ date, type_id: typeId, amount: parsed, note, kind: 'general' });
+        toast(`נרשמה הוצאה חד-פעמית של ${shekelSmart(parsed)}`);
+      }
       reset();
-      if (d.getMonth() !== month.getMonth() || d.getFullYear() !== month.getFullYear()) setMonth(new Date(d.getFullYear(), d.getMonth(), 1));
-      else load();
+      await load();
     } catch (e) {
       console.error(e);
       toast('השמירה נכשלה. נסה שוב.', 'err');
@@ -81,113 +146,190 @@ export function Expenses() {
     setSaving(false);
   }
 
-  function edit(e: Expense) {
-    setEditId(e.id);
-    setDate(e.date);
-    setTypeId(e.type_id);
-    setAmount(String(e.amount));
-    setNote(e.note ?? '');
-    setOrig({ amount: String(e.amount), note: e.note ?? '' });
-    document.querySelector('.screen')?.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
   async function remove() {
-    if (!editId) return;
-    if (!(await ask({ title: 'למחוק את ההוצאה?', text: `${shekelSmart(parsed ?? 0)} · ${shortDate(fromIso(date))}`, ok: 'מחיקה', danger: true }))) return;
-    await deleteExpense(editId);
-    toast('ההוצאה נמחקה');
+    if (!editing) return;
+    if (editing.recurring_id) {
+      const how = await choose({
+        title: 'למחוק את ההוצאה הקבועה?',
+        text: `${editing.type ?? 'הוצאה'} · ${shekelSmart(editing.amount)}`,
+        options: [
+          { label: `לבטל רק ב${MONTHS[ym.m]}`, value: 'one' },
+          { label: `להפסיק מ${MONTHS[ym.m]} והלאה`, value: 'stop', danger: true },
+        ],
+      });
+      if (!how) return;
+      if (how === 'one') await saveExpense({ id: editing.id, date: editing.date, type_id: editing.type_id, amount: 0, note: 'בוטל לחודש הזה' });
+      else await stopRecurring(editing.recurring_id, ymKey(ym));
+      toast(how === 'one' ? 'בוטל לחודש הזה' : 'ההוצאה הקבועה הופסקה');
+    } else {
+      if (!(await ask({ title: 'למחוק את ההוצאה?', text: `${shekelSmart(editing.amount)} · ${shortDate(fromIso(editing.date))}`, ok: 'מחיקה', danger: true }))) return;
+      await deleteExpense(editing.id);
+      toast('ההוצאה נמחקה');
+    }
     reset();
     load();
   }
 
-  const total = list.reduce((s, e) => s + e.amount, 0);
-  const byType = new Map<string, number>();
-  for (const e of list) byType.set(e.type ?? 'ללא סוג', (byType.get(e.type ?? 'ללא סוג') ?? 0) + e.amount);
+  const fixed = list.filter((e) => e.recurring_id != null);
+  const oneOff = list.filter((e) => e.recurring_id == null && e.kind === 'general');
+  const workers = list.filter((e) => e.kind === 'workers');
+  const sum = (l: Expense[]) => l.reduce((s, e) => s + e.amount, 0);
+  const total = sum(list);
+  const shownWorkers = workers.filter((e) => matches(e.note, q));
+
+  const row = (e: Expense) => {
+    const d = fromIso(e.date);
+    const canceled = e.recurring_id != null && e.amount === 0;
+    return (
+      <button key={e.id} type="button" className={`entry${editing?.id === e.id ? ' editing' : ''}`} onClick={() => edit(e)}>
+        <span className="when">
+          <small>{DAY_SHORT[d.getDay()]}</small>
+          <b>{d.getDate()}.{d.getMonth() + 1}</b>
+        </span>
+        <span className="what">
+          <b style={canceled ? { color: 'var(--ink2)', textDecoration: 'line-through' } : undefined}>
+            {e.kind === 'workers' ? e.note || 'פועלים' : e.type ?? 'ללא סוג'}
+          </b>
+          <span>{canceled ? 'בוטל לחודש הזה' : e.kind === 'workers' ? 'פועלים' : e.recurring_id ? `קבועה כל חודש${e.note ? ` · ${e.note}` : ''}` : e.note || 'חד-פעמית'}</span>
+        </span>
+        <span className="amt">{shekelSmart(e.amount)}</span>
+      </button>
+    );
+  };
 
   return (
     <>
-      <SubBar title={editId ? 'עריכת הוצאה' : 'הוצאה כללית'} />
+      <SubBar title="הוצאות" sub="קבועות כל חודש · פועלים" />
+      <div className="pad" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <MonthBar ym={ym} onChange={(next) => go({ ym: next })} />
+        <section className="card exp-sum">
+          <div className="inv-total">
+            <span>סה״כ הוצאות ב{MONTHS[ym.m]}</span>
+            <b>{shekelSmart(total)}</b>
+          </div>
+          <div className="inv-agents">
+            <span>קבועות · {shekelSmart(sum(fixed))}</span>
+            <span>פועלים · {shekelSmart(sum(workers))}</span>
+            {oneOff.length > 0 && <span>חד-פעמיות · {shekelSmart(sum(oneOff))}</span>}
+          </div>
+        </section>
+        <div className="segment" role="tablist">
+          <button type="button" role="tab" aria-selected={tab === 'fixed'} className={tab === 'fixed' ? 'on' : ''} onClick={() => go({ tab: 'fixed' })}>
+            הוצאות קבועות
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'workers'} className={tab === 'workers' ? 'on' : ''} onClick={() => go({ tab: 'workers' })}>
+            פועלים
+          </button>
+        </div>
+      </div>
+
       <div className="form">
-        <div className="two">
-          <label className="date-chip" style={{ height: 52, fontSize: 17, justifyContent: 'center' }}>
-            <Icon name="calendar" size={20} />
-            {shortDate(fromIso(date))}
-            <input type="date" aria-label="תאריך ההוצאה" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
-          </label>
-          <div className={`money-in${parsed === null ? ' bad' : ''}`}>
-            <input inputMode="decimal" aria-label="סכום" aria-invalid={parsed === null} placeholder="סכום" value={amount} onChange={(e) => setAmount(e.target.value)} />
-            <span>₪</span>
+        <section className="card box exp-form">
+          <b style={{ fontSize: 17 }}>
+            {editing ? 'עריכת הוצאה' : tab === 'workers' ? 'תשלום לפועלים' : 'הוצאה חדשה'}
+          </b>
+          <div className="two">
+            {tab === 'workers' || !recurring || (editing && !editing.recurring_id) ? (
+              <label className="date-chip" style={{ height: 52, fontSize: 17, justifyContent: 'center' }}>
+                <Icon name="calendar" size={20} />
+                {shortDate(fromIso(date))}
+                <input type="date" aria-label="תאריך" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
+              </label>
+            ) : (
+              <div className="date-chip fixed-note" style={{ height: 52, justifyContent: 'center' }}>
+                <Icon name="refresh" size={18} /> כל 1 לחודש
+              </div>
+            )}
+            <div className={`money-in${parsed === null ? ' bad' : ''}`}>
+              <input inputMode="decimal" aria-label="סכום" aria-invalid={parsed === null} placeholder="סכום" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <span>₪</span>
+            </div>
           </div>
-        </div>
-        <div className="field">
-          <span className="lbl">סוג ההוצאה</span>
-          <div className="chips">
-            {types.map((t) => (
-              <button key={t.id} type="button" aria-pressed={typeId === t.id} className={`chip${typeId === t.id ? ' on' : ''}`} onClick={() => setTypeId(t.id)}>
-                {t.name}
+          {parsed === null && <div className="field-err">כותבים רק מספר, למשל 3500 או 120.50</div>}
+
+          {tab === 'fixed' && (
+            <div className="field">
+              <span className="lbl">סוג ההוצאה</span>
+              <div className="chips">
+                {types.map((t) => (
+                  <button key={t.id} type="button" aria-pressed={typeId === t.id} className={`chip${typeId === t.id ? ' on' : ''}`} onClick={() => setTypeId(t.id)}>
+                    {t.name}
+                  </button>
+                ))}
+                <button type="button" className="chip add" onClick={newType}>+ סוג חדש</button>
+              </div>
+            </div>
+          )}
+
+          <input
+            className="input"
+            style={{ fontSize: 16, fontWeight: 600, height: 48 }}
+            placeholder={tab === 'workers' ? 'שם הפועל / על מה (לא חובה)' : 'הערה (לא חובה)'}
+            aria-label="הערה"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+
+          {tab === 'fixed' && !editing && (
+            <div className="line" style={{ gap: 12 }}>
+              <span className="name" style={{ fontSize: 16 }}>
+                חוזרת כל חודש
+                <small className="hint" style={{ display: 'block', fontWeight: 500 }}>
+                  {recurring ? `נרשמת לבד ב-1 לכל חודש, החל מ${MONTHS[ym.m]}` : 'הוצאה חד-פעמית, רק בתאריך שבחרת'}
+                </small>
+              </span>
+              <button type="button" role="switch" aria-checked={recurring} aria-label="חוזרת כל חודש" className={`switch${recurring ? ' on' : ''}`} onClick={() => setRecurring((r) => !r)}>
+                <span />
               </button>
-            ))}
-            <button type="button" className="chip add" onClick={newType}>+ סוג חדש</button>
-          </div>
-          {parsed === null && <div className="field-err">כותבים רק מספר, למשל 350 או 12.50</div>}
-          {types.length === 0 && <span className="hint">עוד אין סוגי הוצאות. לוחצים "+ סוג חדש" ומוסיפים שכירות, חשמל וכו׳.</span>}
-        </div>
-        <div className="field">
-          <label htmlFor="enote">הערה (לא חובה)</label>
-          <input id="enote" className="input" style={{ fontSize: 17, fontWeight: 600 }} value={note} onChange={(e) => setNote(e.target.value)} />
-        </div>
-        <button type="button" className="btn" onClick={save} disabled={saving}>
-          {saving ? 'שומר…' : editId ? 'שמירת השינויים' : 'הוספת ההוצאה'}
-        </button>
-        {editId && (
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <button type="button" className="danger-link" onClick={remove}>מחיקה</button>
-            <button type="button" className="danger-link" style={{ color: 'var(--ink2)' }} onClick={reset}>ביטול עריכה</button>
+            </div>
+          )}
+
+          <button type="button" className="btn" onClick={save} disabled={saving}>
+            {saving ? 'שומר…' : editing ? 'שמירת השינויים' : tab === 'workers' ? 'רישום התשלום' : recurring ? 'הוספת הוצאה קבועה' : 'הוספת ההוצאה'}
+          </button>
+          {editing && (
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <button type="button" className="danger-link" onClick={remove}>
+                מחיקה
+              </button>
+              <button type="button" className="danger-link" style={{ color: 'var(--ink2)' }} onClick={reset}>
+                ביטול עריכה
+              </button>
+            </div>
+          )}
+        </section>
+
+        {tab === 'fixed' ? (
+          <>
+            <div className="box ledger" style={{ padding: '4px 14px' }}>
+              <div className="list-head">
+                <b>קבועות ב{MONTHS[ym.m]}</b>
+                <span>{shekelSmart(sum(fixed))}</span>
+              </div>
+              {fixed.length === 0 && <p className="hint" style={{ padding: '6px 0 12px' }}>עוד אין הוצאות קבועות. מוסיפים למעלה שכירות, חשמל וכו׳ – והן יחזרו לבד כל חודש.</p>}
+              {fixed.map(row)}
+            </div>
+            {oneOff.length > 0 && (
+              <div className="box ledger" style={{ padding: '4px 14px' }}>
+                <div className="list-head">
+                  <b>חד-פעמיות</b>
+                  <span>{shekelSmart(sum(oneOff))}</span>
+                </div>
+                {oneOff.map(row)}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="box ledger" style={{ padding: '4px 14px' }}>
+            <div className="list-head">
+              <b>פועלים ב{MONTHS[ym.m]}</b>
+              <span>{shekelSmart(sum(workers))}</span>
+            </div>
+            {workers.length > 6 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש פועל" className="in-list" />}
+            {workers.length === 0 && <p className="hint" style={{ padding: '6px 0 12px' }}>עוד לא נרשמו תשלומים לפועלים החודש.</p>}
+            {shownWorkers.map(row)}
           </div>
         )}
-
-        <div className="switcher" style={{ marginTop: 8 }}>
-          <button type="button" aria-label="החודש הקודם" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>
-            <Icon name="prev" stroke={2.5} />
-          </button>
-          <div className="label" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <b>{MONTHS[month.getMonth()]} {month.getFullYear()}</b>
-            <span>סה״כ {shekelSmart(total)}</span>
-          </div>
-          <button
-            type="button"
-            aria-label="החודש הבא"
-            disabled={month.getFullYear() === now.getFullYear() && month.getMonth() === now.getMonth()}
-            onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
-          >
-            <Icon name="next" stroke={2.5} />
-          </button>
-        </div>
-
-        {byType.size > 0 && (
-          <div className="week-notes" style={{ justifyContent: 'flex-start' }}>
-            {[...byType.entries()].map(([k, v]) => (
-              <span key={k}>{k}: {shekelSmart(v)}</span>
-            ))}
-          </div>
-        )}
-
-        <div className="box ledger" style={{ padding: '4px 14px' }}>
-          {list.length === 0 && <p className="hint" style={{ padding: '12px 0' }}>אין הוצאות בחודש הזה.</p>}
-          {list.map((e) => (
-            <button key={e.id} type="button" className="entry" onClick={() => edit(e)}>
-              <span className="when">
-                <small>{shortDate(fromIso(e.date)).split(' ')[0]}</small>
-                <b>{fromIso(e.date).getDate()}.{fromIso(e.date).getMonth() + 1}</b>
-              </span>
-              <span className="what">
-                <b>{e.type ?? 'ללא סוג'}</b>
-                {e.note && <span>{e.note}</span>}
-              </span>
-              <span className="amt">{shekelSmart(e.amount)}</span>
-            </button>
-          ))}
-        </div>
       </div>
     </>
   );

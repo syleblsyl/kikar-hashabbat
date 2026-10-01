@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { SubBar } from '../components/SubBar';
+import { matches, SearchBox } from '../components/SearchBox';
 import { listAgents, type Agent } from '../db/catalog';
 import { balances } from '../db/ops';
 import { shekel } from '../lib/money';
@@ -9,6 +10,7 @@ import { initialOf } from './Agents';
 export function PaymentPick() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [bal, setBal] = useState<Map<number, number>>(new Map());
+  const [q, setQ] = useState('');
 
   useEffect(() => {
     Promise.all([listAgents(), listAgents(true), balances()]).then(([a, h, b]) => {
@@ -26,7 +28,8 @@ export function PaymentPick() {
       <SubBar title="תשלום לסוכן" sub={agents ? `סה״כ אני חייב לסוכנים: ${shekel(total)}` : undefined} />
       <section className="card list" style={{ marginTop: 8 }}>
         {agents?.length === 0 && <div className="empty" style={{ borderTop: 0 }}>עוד אין סוכנים.</div>}
-        {(agents ?? []).map((a, i) => {
+        {(agents?.length ?? 0) > 5 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן" className="in-list" />}
+        {(agents ?? []).filter((a) => matches(a.name, q)).map((a, i) => {
           const b = bal.get(a.id) ?? 0;
           return (
             <Link key={a.id} to={`/agent/${a.id}?pay=1`} className="row" style={i === 0 ? { borderTop: 0 } : undefined}>

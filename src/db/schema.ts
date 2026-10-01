@@ -146,4 +146,61 @@ export const MIGRATIONS: string[] = [
               ELSE (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.returnable = 1 AND l.qty_received > 0) END AS returnable_lines
     FROM deliveries d;
   `,
+
+  // v3 — monthly: any number of invoices per agent (no more one-per-week), recurring and workers' expenses.
+  // Rebuilding "deliveries" drops the old table; with foreign keys on, that cascades to its lines, so the
+  // lines are copied aside first and put back after. The _guard row fails the whole step if anything is missing.
+  `
+  CREATE TEMP TABLE _lines AS SELECT * FROM delivery_lines;
+  CREATE TEMP TABLE _count AS SELECT (SELECT COUNT(*) FROM delivery_lines) AS lines, (SELECT COUNT(*) FROM deliveries) AS dels;
+  DROP VIEW IF EXISTS delivery_totals;
+  CREATE TABLE deliveries_v3 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id INTEGER NOT NULL REFERENCES agents(id),
+    week_start TEXT NOT NULL,
+    delivery_date TEXT NOT NULL,
+    returns_date TEXT,
+    returns_done INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    manual_amount REAL,
+    manual_credit REAL,
+    manual_returnable INTEGER NOT NULL DEFAULT 1,
+    note TEXT
+  );
+  INSERT INTO deliveries_v3 (id, agent_id, week_start, delivery_date, returns_date, returns_done, notes, manual_amount, manual_credit, manual_returnable, note)
+    SELECT id, agent_id, week_start, delivery_date, returns_date, returns_done, notes, manual_amount, manual_credit, manual_returnable, note FROM deliveries;
+  DROP TABLE deliveries;
+  ALTER TABLE deliveries_v3 RENAME TO deliveries;
+  INSERT OR IGNORE INTO delivery_lines SELECT * FROM _lines;
+  CREATE INDEX IF NOT EXISTS idx_deliveries_week ON deliveries (week_start);
+  CREATE INDEX IF NOT EXISTS idx_deliveries_date ON deliveries (delivery_date);
+  CREATE INDEX IF NOT EXISTS idx_deliveries_agent ON deliveries (agent_id, delivery_date);
+  CREATE TEMP TABLE _guard (ok INTEGER CHECK (ok = 1));
+  INSERT INTO _guard SELECT ((SELECT COUNT(*) FROM delivery_lines) = (SELECT lines FROM _count)) AND ((SELECT COUNT(*) FROM deliveries) = (SELECT dels FROM _count));
+  DROP TABLE _guard;
+  DROP TABLE _count;
+  DROP TABLE _lines;
+
+  CREATE VIEW delivery_totals AS
+  SELECT d.id, d.agent_id, d.week_start, d.delivery_date, d.returns_done, d.returns_date,
+         d.manual_amount, d.manual_credit, d.manual_returnable, d.note,
+         COALESCE(d.manual_amount, (SELECT SUM(l.qty_received * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id), 0) AS received,
+         COALESCE(d.manual_credit, (SELECT SUM(l.qty_returned * l.unit_cost) FROM delivery_lines l WHERE l.delivery_id = d.id), 0) AS credit,
+         (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.qty_received > 0) AS lines,
+         CASE WHEN d.manual_amount IS NOT NULL THEN d.manual_returnable
+              ELSE (SELECT COUNT(*) FROM delivery_lines l WHERE l.delivery_id = d.id AND l.returnable = 1 AND l.qty_received > 0) END AS returnable_lines
+    FROM deliveries d;
+
+  CREATE TABLE IF NOT EXISTS recurring_expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type_id INTEGER REFERENCES expense_types(id),
+    amount REAL NOT NULL,
+    note TEXT,
+    start_month TEXT NOT NULL,
+    end_month TEXT
+  );
+  ALTER TABLE expenses ADD COLUMN recurring_id INTEGER REFERENCES recurring_expenses(id);
+  ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'general';
+  CREATE INDEX IF NOT EXISTS idx_expenses_recurring ON expenses (recurring_id, date);
+  `,
 ];

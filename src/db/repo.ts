@@ -125,3 +125,98 @@ export async function openReturnsCount(weekStart: Date): Promise<number> {
   );
   return Number(row?.n ?? 0);
 }
+
+/* ======================= by month ======================= */
+
+export function monthRange(year: number, month: number): { from: string; to: string } {
+  return { from: iso(new Date(year, month, 1)), to: iso(new Date(year, month + 1, 0)) };
+}
+
+export type MonthSummary = {
+  income: number;
+  /** invoices minus return credits, by invoice date */
+  goodsCost: number;
+  paid: number;
+  expenses: number;
+  /** of which fixed monthly expenses */
+  fixed: number;
+  /** of which workers */
+  workers: number;
+  net: number;
+  mode: NetMode;
+  openReturns: number;
+};
+
+export async function monthSummary(year: number, month: number): Promise<MonthSummary> {
+  const { from, to } = monthRange(year, month);
+  const [inc] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM daily_income WHERE date BETWEEN ? AND ?', [from, to]);
+  const [goods] = await query<{ total: number; open: number }>(
+    `SELECT COALESCE(SUM(t.received - t.credit), 0) AS total,
+            COALESCE(SUM(CASE WHEN t.returns_done = 0 AND t.returnable_lines > 0 AND t.received > 0 THEN 1 ELSE 0 END), 0) AS open
+       FROM delivery_totals t WHERE t.delivery_date BETWEEN ? AND ?`,
+    [from, to],
+  );
+  const [pay] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM agent_payments WHERE date BETWEEN ? AND ?', [from, to]);
+  const [exp] = await query<{ total: number; fixed: number; workers: number }>(
+    `SELECT COALESCE(SUM(amount), 0) AS total,
+            COALESCE(SUM(CASE WHEN recurring_id IS NOT NULL THEN amount ELSE 0 END), 0) AS fixed,
+            COALESCE(SUM(CASE WHEN kind = 'workers' THEN amount ELSE 0 END), 0) AS workers
+       FROM expenses WHERE date BETWEEN ? AND ?`,
+    [from, to],
+  );
+  const mode = await getNetMode();
+  const income = Number(inc?.total ?? 0);
+  const goodsCost = Number(goods?.total ?? 0);
+  const paid = Number(pay?.total ?? 0);
+  const expenses = Number(exp?.total ?? 0);
+  return {
+    income,
+    goodsCost,
+    paid,
+    expenses,
+    fixed: Number(exp?.fixed ?? 0),
+    workers: Number(exp?.workers ?? 0),
+    mode,
+    net: income - (mode === 'paid' ? paid : goodsCost) - expenses,
+    openReturns: Number(goods?.open ?? 0),
+  };
+}
+
+export type AgentMonthRow = {
+  id: number;
+  name: string;
+  color: string | null;
+  invoices: number;
+  /** invoices this month minus return credits */
+  invoiced: number;
+  paid: number;
+  /** what I owe the agent today, everything included */
+  balance: number;
+};
+
+export async function agentsForMonth(year: number, month: number): Promise<AgentMonthRow[]> {
+  const { from, to } = monthRange(year, month);
+  const rows = await query<{ id: number; name: string; color: string | null; invoices: number; invoiced: number; paid: number; balance: number }>(
+    `SELECT a.id, a.name, a.color,
+            (SELECT COUNT(*) FROM delivery_totals t WHERE t.agent_id = a.id AND t.delivery_date BETWEEN ? AND ?) AS invoices,
+            (SELECT COALESCE(SUM(t.received - t.credit), 0) FROM delivery_totals t WHERE t.agent_id = a.id AND t.delivery_date BETWEEN ? AND ?) AS invoiced,
+            (SELECT COALESCE(SUM(p.amount), 0) FROM agent_payments p WHERE p.agent_id = a.id AND p.date BETWEEN ? AND ?) AS paid,
+            COALESCE((SELECT SUM(t.received - t.credit) FROM delivery_totals t WHERE t.agent_id = a.id), 0)
+              - COALESCE((SELECT SUM(p.amount) FROM agent_payments p WHERE p.agent_id = a.id), 0) AS balance
+       FROM agents a
+      WHERE a.active = 1
+         OR EXISTS (SELECT 1 FROM deliveries d WHERE d.agent_id = a.id AND d.delivery_date BETWEEN ? AND ?)`,
+    [from, to, from, to, from, to, from, to],
+  );
+  return rows
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      color: r.color,
+      invoices: Number(r.invoices),
+      invoiced: Number(r.invoiced),
+      paid: Number(r.paid),
+      balance: Number(r.balance),
+    }))
+    .sort((a, b) => b.balance - a.balance || a.name.localeCompare(b.name, 'he'));
+}

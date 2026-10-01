@@ -8,7 +8,10 @@ import { getDb } from './db/sqlite';
 import { hasPin } from './lib/pin';
 import { getSetting, setSetting } from './db/repo';
 import { toast } from './components/Toast';
-import { startOfWeek, today } from './lib/dates';
+import { thisMonth } from './components/MonthBar';
+import { ensureRecurring } from './db/ops';
+import { Invoices } from './screens/Invoices';
+import { Navigate } from 'react-router-dom';
 import { checkForUpdateThrottled, type UpdateInfo } from './lib/updater';
 import { Home } from './screens/Home';
 import { Lock } from './screens/Lock';
@@ -67,7 +70,7 @@ type ShellProps = { gate: Gate; lockOn: boolean; onLock: () => void; onChangePin
 
 function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps) {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(today()));
+  const [ym, setYm] = useState(thisMonth);
   const [backupDue, setBackupDue] = useState(false);
   const nav = useNavigate();
   const back = useBack();
@@ -105,7 +108,7 @@ function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps)
       <div className="screen" ref={scroller}>
         <ScreenBoundary key={loc.pathname} onHome={() => nav('/', { replace: true })}>
           <Routes>
-            <Route path="/" element={<Home update={update} weekStart={weekStart} setWeekStart={setWeekStart} onLock={onLock} lockOn={lockOn} backupDue={backupDue} />} />
+            <Route path="/" element={<Home update={update} ym={ym} setYm={setYm} onLock={onLock} lockOn={lockOn} backupDue={backupDue} />} />
             <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} lockOn={lockOn} onLockSetting={onLockSetting} onChangePin={onChangePin} onLock={onLock} />} />
             <Route path="/catalog" element={<Catalog />} />
             <Route path="/product/:id" element={<ProductEdit />} />
@@ -148,7 +151,9 @@ function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps)
                 />
               }
             />
-            <Route path="/delivery" element={<Delivery />} />
+            <Route path="/invoices" element={<Invoices />} />
+            <Route path="/invoice/:id" element={<Delivery />} />
+            <Route path="/delivery" element={<Navigate to="/invoices" replace />} />
             <Route path="/returns" element={<Returns />} />
             <Route path="/income" element={<Income />} />
             <Route path="/payment" element={<PaymentPick />} />
@@ -201,6 +206,8 @@ export default function App() {
     setGate('loading');
     try {
       await getDb();
+      // fixed monthly expenses: add this month's rows (and any month missed while the app was closed)
+      await ensureRecurring().catch((e) => console.error(e));
       // the entry code is optional and off unless it was turned on in Settings
       const on = (await getSetting('lock_on')) === '1' && (await hasPin());
       setLockOn(on);

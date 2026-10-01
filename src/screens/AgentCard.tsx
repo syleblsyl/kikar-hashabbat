@@ -3,11 +3,11 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ask } from '../components/Dialog';
 import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
+import { matches, SearchBox } from '../components/SearchBox';
 import { toast } from '../components/Toast';
 import { getAgent, productsOfAgent, unhideAgent, type Agent, type Product } from '../db/catalog';
 import { addPayment, agentLedger, balances, deletePayment, type LedgerEntry } from '../db/ops';
 import { DAY_NAMES, DAY_SHORT, fromIso, iso, startOfWeek, today } from '../lib/dates';
-import { weekInfo } from '../lib/hebrew';
 import { parseAmountStrict, products as productsLabel, shekelCents, shekelSmart } from '../lib/money';
 import { initialOf } from './Agents';
 import { useBack } from '../components/useBack';
@@ -40,6 +40,7 @@ export function AgentCard() {
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [openPayment, setOpenPayment] = useState<string | null>(null);
+  const [prodQ, setProdQ] = useState('');
   const payRef = useRef<HTMLElement>(null);
   const amountRef = useRef<HTMLInputElement>(null);
 
@@ -107,8 +108,8 @@ export function AgentCard() {
   }
 
   function open(e: LedgerEntry) {
-    if (e.kind === 'delivery') nav(`/delivery?agent=${agentId}&week=${e.weekStart}`);
-    else if (e.kind === 'returns') nav(`/returns?agent=${agentId}&week=${e.weekStart}`);
+    if (e.kind === 'delivery') nav(`/invoice/${e.id}`);
+    else if (e.kind === 'returns') nav(`/returns?invoice=${e.id}`);
     else setOpenPayment((k) => (k === e.key ? null : e.key));
   }
 
@@ -135,7 +136,7 @@ export function AgentCard() {
   const mine = myBalanceWords(balance, agent.name);
   const lastPay = ledger.find((e) => e.kind === 'payment');
   const pending = ledger.filter((e) => e.pendingReturns);
-  const pendingPast = pending.filter((e) => (e.weekStart ?? '') < iso(startOfWeek(today())));
+  const pendingPast = pending.filter((e) => e.date < iso(startOfWeek(today())));
   const pendingSum = pending.reduce((s, e) => s + e.amount, 0);
 
   return (
@@ -193,7 +194,7 @@ export function AgentCard() {
           ) : (
             <span />
           )}
-          <Link to={`/delivery?agent=${agentId}`}><Icon name="truck" size={18} /> סחורה</Link>
+          <Link to={`/invoice/new?agent=${agentId}`}><Icon name="receipt" size={18} /> חשבונית</Link>
         </div>
       </section>
 
@@ -212,10 +213,10 @@ export function AgentCard() {
           </span>
         )}
         {pendingPast.map((p) => (
-          <Link key={p.key} to={`/returns?agent=${agentId}&week=${p.weekStart}`} className="banner gold slim">
+          <Link key={p.key} to={`/returns?invoice=${p.id}`} className="banner gold slim">
             <span className="ic"><Icon name="undo" size={18} /></span>
             <span className="txt">
-              <b>החזרות · {p.weekStart ? weekInfo(fromIso(p.weekStart)).title : ''}</b>
+              <b>החזרות · חשבונית מ-{fromIso(p.date).getDate()}.{fromIso(p.date).getMonth() + 1}</b>
               <span>עוד לא נרשמו</span>
             </span>
             <span className="go">לרישום</span>
@@ -300,7 +301,7 @@ export function AgentCard() {
 
       {tab === 'ledger' ? (
         <section className="card ledger" style={{ margin: '10px 16px 0', padding: '2px 14px' }}>
-          {ledger.length === 0 && <p className="hint" style={{ padding: '14px 0' }}>עוד אין תנועות. אחרי קבלת סחורה ותשלומים הם יופיעו כאן.</p>}
+          {ledger.length === 0 && <p className="hint" style={{ padding: '14px 0' }}>עוד אין תנועות. אחרי חשבוניות ותשלומים הם יופיעו כאן.</p>}
           {ledger.map((e) => {
             const d = fromIso(e.date);
             const noCredit = e.kind === 'returns' && Math.abs(e.amount) < 0.004;
@@ -314,15 +315,7 @@ export function AgentCard() {
                   <span className="what">
                     <b>{e.title}</b>
                     <span>
-                      {e.kind === 'payment'
-                        ? e.sub || 'תשלום'
-                        : `${e.weekStart ? weekInfo(fromIso(e.weekStart)).title : ''}${
-                            e.kind === 'delivery'
-                              ? ` · ${e.manual ? `לפי סכום${e.note ? ` · ${e.note}` : ''}` : e.sub.split(' · ').pop()}`
-                              : e.manual
-                                ? ' · זיכוי לפי סכום'
-                                : ''
-                          }`}
+                      {e.kind === 'payment' ? e.sub || 'תשלום' : e.sub}
                       {e.pendingReturns ? ' · ממתין להחזרות' : ''}
                     </span>
                   </span>
@@ -354,7 +347,8 @@ export function AgentCard() {
         </section>
       ) : (
         <section className="card" style={{ margin: '10px 16px 0', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {prods.map((p) => (
+          {prods.length > 6 && <SearchBox value={prodQ} onChange={setProdQ} placeholder="חיפוש מוצר" className="in-list" />}
+          {prods.filter((p) => matches(p.name, prodQ)).map((p) => (
             <Link key={p.id} to={`/product/${p.id}`} className="row" style={{ minHeight: 52 }}>
               <span className="grow">
                 <b>{p.name}</b>
