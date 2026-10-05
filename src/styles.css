@@ -594,3 +594,4 @@ a.btn { text-decoration: none; }
 .list-head span { font-weight: 800; color: var(--red); }
 .ledger .entry.editing { background: var(--gold-soft); border-radius: 10px; }
 .searchbox.full { width: 100%; }
+.toast { white-space: pre-line; }

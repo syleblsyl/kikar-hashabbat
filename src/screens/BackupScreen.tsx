@@ -73,7 +73,8 @@ export function BackupScreen() {
       }, 800);
     } catch (err) {
       console.error(err);
-      toast('השחזור נכשל. הנתונים הקודמים נשארו כמו שהיו.', 'err');
+      const why = String((err as Error)?.message ?? err).replace(/^(\w+: )+/, '').slice(0, 80);
+      toast(`השחזור נכשל. הנתונים הקודמים נשארו כמו שהיו.\n(${why})`, 'err');
       setBusy(false);
     }
   }

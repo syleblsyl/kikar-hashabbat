@@ -12,6 +12,7 @@ const TABLES = [
   'price_history',
   'payment_methods',
   'expense_types',
+  'recurring_expenses',
   'deliveries',
   'delivery_lines',
   'daily_income',
