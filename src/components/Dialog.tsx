@@ -5,7 +5,7 @@ type Choice = { label: string; value: string; danger?: boolean };
 type Req =
   | { kind: 'choose'; title: string; text?: string; options: Choice[]; resolve: (v: string | null) => void }
   | { kind: 'confirm'; title: string; text?: string; ok: string; cancel: string; danger: boolean; resolve: (v: boolean) => void }
-  | { kind: 'prompt'; title: string; text?: string; ok: string; cancel: string; value: string; placeholder?: string; resolve: (v: string | null) => void };
+  | { kind: 'prompt'; title: string; text?: string; ok: string; cancel: string; value: string; placeholder?: string; numeric?: boolean; resolve: (v: string | null) => void };
 
 let push: ((r: Req) => void) | null = null;
 let dismiss: (() => boolean) | null = null;
@@ -32,10 +32,10 @@ export function choose(o: { title: string; text?: string; options: Choice[] }): 
 }
 
 /** In-app text input dialog. Resolves the trimmed text, or null when cancelled/empty. */
-export function askText(o: { title: string; text?: string; value?: string; placeholder?: string; ok?: string }): Promise<string | null> {
+export function askText(o: { title: string; text?: string; value?: string; placeholder?: string; ok?: string; numeric?: boolean }): Promise<string | null> {
   return new Promise((resolve) => {
     if (!push) return resolve(window.prompt(o.title, o.value ?? ''));
-    push({ kind: 'prompt', title: o.title, text: o.text, ok: o.ok ?? 'שמירה', cancel: 'ביטול', value: o.value ?? '', placeholder: o.placeholder, resolve });
+    push({ kind: 'prompt', title: o.title, text: o.text, ok: o.ok ?? 'שמירה', cancel: 'ביטול', value: o.value ?? '', placeholder: o.placeholder, numeric: o.numeric, resolve });
   });
 }
 
@@ -89,6 +89,9 @@ export function DialogHost() {
             value={value}
             placeholder={req.placeholder}
             aria-label={req.title}
+            inputMode={req.numeric ? 'decimal' : undefined}
+            style={req.numeric ? { fontSize: 28, textAlign: 'center' } : undefined}
+            onFocus={(e) => req.numeric && e.currentTarget.select()}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && close(true)}
           />

@@ -595,3 +595,23 @@ a.btn { text-decoration: none; }
 .ledger .entry.editing { background: var(--gold-soft); border-radius: 10px; }
 .searchbox.full { width: 100%; }
 .toast { white-space: pre-line; }
+
+/* ---------- 1.0.14: returns as big picture tiles (2 across, a sixth of the screen tall) ---------- */
+.ret-help { margin: 0 16px 8px; font-size: 13px; }
+.ret-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 16px; }
+.ret-tile { position: relative; height: max(128px, calc((100svh - var(--safe-top) - var(--safe-bottom)) / 6)); border-radius: 16px; overflow: hidden; border: 2px solid transparent; box-shadow: 0 1px 3px rgba(42, 26, 18, 0.12); }
+.ret-tile.has { border-color: var(--gold); }
+.ret-tile.off { opacity: 0.55; }
+.ret-hit { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; padding: 0; background: transparent; display: block; color: #fff; }
+.ret-hit:active { transform: scale(0.97); }
+.ret-hit img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ret-hit .letter { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--display); font-size: 54px; color: rgba(42, 26, 18, 0.25); padding-bottom: 28px; }
+.ret-num { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -62%); min-width: 58px; height: 58px; padding: 0 10px; border-radius: 29px; background: rgba(42, 26, 18, 0.55); color: #fff; font-size: 32px; font-weight: 800; line-height: 58px; text-align: center; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); animation: retpop 0.18s ease-out; }
+.ret-tile.has .ret-num { background: var(--gold); color: var(--ink); }
+@keyframes retpop { from { transform: translate(-50%, -62%) scale(1.25); } }
+.ret-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 8px 6px; background: linear-gradient(to top, rgba(42, 26, 18, 0.82), rgba(42, 26, 18, 0)); display: flex; flex-direction: column; align-items: flex-start; text-align: right; }
+.ret-cap b { font-size: 15px; font-weight: 800; line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ret-cap small { font-size: 12px; font-weight: 700; opacity: 0.92; }
+.ret-mini { position: absolute; top: 6px; width: 40px; height: 40px; border-radius: 20px; border: 0; background: rgba(255, 255, 255, 0.9); color: var(--ink); display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2); z-index: 1; }
+.ret-mini.edit { right: 6px; }
+.ret-mini.reset { left: 6px; color: var(--red); }

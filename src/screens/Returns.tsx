@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ask } from '../components/Dialog';
+import { ask, askText } from '../components/Dialog';
 import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
 import { matches, SearchBox } from '../components/SearchBox';
-import { Stepper } from '../components/Stepper';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
 import { pendingReturnInvoices, returnsForInvoice, saveReturns, saveReturnsAmount, type InvoiceRow, type ReturnsAgent } from '../db/ops';
@@ -273,41 +272,68 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
       ) : canReturn ? (
         <>
           {returnable.length > 6 && <SearchBox value={productQ} onChange={setProductQ} placeholder="חיפוש מוצר" className="pad-x" />}
-          <div className="items">
-            {shownReturnable.map((i) => (
-              <div key={i.product_id} className="item">
-                <div className="thumb" style={{ background: i.tint ?? '#F1EDE2' }}>
-                  {i.image ? <img src={i.image} alt="" /> : <span className="letter">{i.name.charAt(0)}</span>}
-                </div>
-                <div className="info">
-                  <b>{i.name}</b>
-                  <span className="s">
-                    הגיע {qty(i.qty_received)} · נמכר {qty(i.qty_received - i.qty_returned)} · {shekelCents(i.unit_cost)}
-                  </span>
-                  <div className="foot">
-                    <span className="credit">
-                      <small>זיכוי</small>
-                      <b>{shekelCents(i.qty_returned * i.unit_cost)}</b>
+          <p className="hint ret-help">לחיצה על מוצר מוסיפה 1 · ✎ להקלדת מספר · ↺ לאיפוס</p>
+          <div className="ret-grid">
+            {shownReturnable.map((i) => {
+              const n = i.qty_returned;
+              const full = n >= i.qty_received;
+              return (
+                <div key={i.product_id} className={`ret-tile${n > 0 ? ' has' : ''}`} style={{ background: i.tint ?? '#F1EDE2' }}>
+                  <button
+                    type="button"
+                    className="ret-hit"
+                    aria-label={`${i.name}: נשאר ${qty(n)} מתוך ${qty(i.qty_received)}. לחיצה מוסיפה אחד`}
+                    onClick={() => {
+                      if (full) return toast(`מ${i.name} הגיעו רק ${qty(i.qty_received)}`, 'err');
+                      setRet(i.product_id, Math.min(i.qty_received, Math.floor(n) + 1));
+                    }}
+                  >
+                    {i.image ? <img src={i.image} alt="" /> : <span className="letter">{i.name.charAt(0)}</span>}
+                    <span key={n} className="ret-num">{qty(n)}</span>
+                    <span className="ret-cap">
+                      <b>{i.name}</b>
+                      <small>
+                        הגיע {qty(i.qty_received)}
+                        {n > 0 ? ` · זיכוי ${shekelCents(n * i.unit_cost)}` : ''}
+                      </small>
                     </span>
-                    <div className="step-col">
-                      <Stepper value={i.qty_returned} max={i.qty_received} onChange={(n) => setRet(i.product_id, n)} label={`נשאר ${i.name}`} tone="gold" />
-                      <small>נשאר</small>
-                    </div>
-                  </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="ret-mini edit"
+                    aria-label={`הקלדת מספר ל${i.name}`}
+                    onClick={async () => {
+                      const v = await askText({ title: `כמה נשאר מ${i.name}?`, text: `הגיע ${qty(i.qty_received)}`, value: n ? String(n) : '', numeric: true, ok: 'אישור' });
+                      if (v === null) return;
+                      const x = parseAmountStrict(v);
+                      if (x === null) return toast('כותבים רק מספר', 'err');
+                      if (x > i.qty_received) return toast(`מ${i.name} הגיעו רק ${qty(i.qty_received)}`, 'err');
+                      setRet(i.product_id, x);
+                    }}
+                  >
+                    <Icon name="edit" size={18} />
+                  </button>
+                  {n > 0 && (
+                    <button type="button" className="ret-mini reset" aria-label={`איפוס ${i.name}`} onClick={() => setRet(i.product_id, 0)}>
+                      <Icon name="refresh" size={18} />
+                    </button>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {fixed.map((i) => (
-              <div key={i.product_id} className="item dim">
-                <div className="thumb" style={{ background: '#EDE3D3', opacity: 0.7 }}>
+              <div key={i.product_id} className="ret-tile off" style={{ background: '#EDE3D3' }}>
+                <div className="ret-hit">
                   {i.image ? <img src={i.image} alt="" /> : <span className="letter">{i.name.charAt(0)}</span>}
-                </div>
-                <div className="info">
-                  <b style={{ color: 'var(--ink2)' }}>{i.name}</b>
-                  <span className="s">ללא החזרה · הגיע {qty(i.qty_received)}</span>
+                  <span className="ret-cap">
+                    <b>{i.name}</b>
+                    <small>ללא החזרה · הגיע {qty(i.qty_received)}</small>
+                  </span>
                 </div>
               </div>
             ))}
+          </div>
+          <div className="items" style={{ paddingTop: 10 }}>
             {!cur.returns_done && credit === 0 && returnable.length > 0 && (
               <button type="button" className="btn ghost small end-btn" onClick={nothingLeft} disabled={saving}>
                 <Icon name="check" size={18} /> לא נשאר כלום
