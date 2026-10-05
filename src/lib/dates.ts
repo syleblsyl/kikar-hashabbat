@@ -57,3 +57,31 @@ export function weekLabel(start: Date): string {
 export function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
+
+/* ---------- months as "yyyy-mm" ---------- */
+
+export const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+/** "2026-09-30" → "2026-09" */
+export const monthOf = (isoDate: string) => isoDate.slice(0, 7);
+export function addMonthKey(m: string, n: number): string {
+  const [y, mo] = m.split('-').map(Number);
+  return monthKey(new Date(y, mo - 1 + n, 1));
+}
+export const thisMonthKey = () => monthKey(today());
+/** "2026-09" → "ספטמבר" (with the year when it is not this year, or when asked) */
+export function monthName(m: string, withYear = false): string {
+  const [y, mo] = m.split('-').map(Number);
+  return `${MONTHS[mo - 1]}${withYear || y !== today().getFullYear() ? ` ${y}` : ''}`;
+}
+export function monthFirst(m: string): string {
+  return `${m}-01`;
+}
+export function monthLast(m: string): string {
+  const [y, mo] = m.split('-').map(Number);
+  return iso(new Date(y, mo, 0));
+}
+/** "d.m" for short lists */
+export const dm = (s: string) => {
+  const d = fromIso(s);
+  return `${d.getDate()}.${d.getMonth() + 1}`;
+};

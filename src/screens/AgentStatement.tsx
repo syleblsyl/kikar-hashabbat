@@ -5,7 +5,7 @@ import { DocShare } from '../components/DocShare';
 import { Icon } from '../components/Icon';
 import { SubBar } from '../components/SubBar';
 import { getAgent, type Agent } from '../db/catalog';
-import { agentStatement, type Statement, type StatementRange } from '../db/ops';
+import { agentStatement, type Statement, type StatementRange } from '../db/billing';
 import { iso, today } from '../lib/dates';
 
 const RANGES: { k: StatementRange; label: string }[] = [
@@ -22,7 +22,7 @@ export function AgentStatement() {
   const [agent, setAgent] = useState<Agent | null | undefined>(undefined);
   const [range, setRange] = useState<StatementRange | null>(null);
   const [st, setSt] = useState<Statement | null>(null);
-  const [details, setDetails] = useState(true);
+  const [details, setDetails] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -64,7 +64,7 @@ export function AgentStatement() {
           ))}
         </div>
         <button type="button" className={`chip${details ? ' on' : ''}`} aria-pressed={details} onClick={() => setDetails((d) => !d)}>
-          פירוט מוצרים
+          פירוט
         </button>
       </div>
 

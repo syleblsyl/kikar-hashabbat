@@ -203,4 +203,55 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'general';
   CREATE INDEX IF NOT EXISTS idx_expenses_recurring ON expenses (recurring_id, date);
   `,
+
+  // v4 — monthly invoices from agents (billed per month of goods) next to the stock, and "checked" differences.
+  // Agents whose entries were all one-a-month sums had their invoice typed in as stock: those become invoices
+  // for the month before (see convertLegacyTables in money.ts, which does the same for old backups).
+  // Written for both SQL runners: no comments, no ";" or line breaks inside quotes, every line indented
+  // (on the web a script with DELETE FROM is joined into one line), and a guard that fails the whole step
+  // if any agent's total would change.
+  `
+  CREATE TABLE agent_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id INTEGER NOT NULL REFERENCES agents(id),
+    month TEXT NOT NULL CHECK (month GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+    date TEXT NOT NULL,
+    amount REAL NOT NULL,
+    number TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX idx_agent_invoices_agent ON agent_invoices (agent_id, month);
+  CREATE INDEX idx_agent_invoices_month ON agent_invoices (month);
+  CREATE TABLE invoice_checks (
+    agent_id INTEGER NOT NULL REFERENCES agents(id),
+    month TEXT NOT NULL,
+    diff REAL NOT NULL,
+    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_id, month)
+  );
+  CREATE INDEX IF NOT EXISTS idx_deliveries_returns ON deliveries (returns_date);
+  CREATE TEMP TABLE _v4_before AS SELECT agent_id, SUM(received - credit) AS total FROM delivery_totals GROUP BY agent_id;
+  CREATE TEMP TABLE _v4_conv AS
+    SELECT agent_id FROM deliveries GROUP BY agent_id
+    HAVING SUM(CASE WHEN manual_amount IS NULL THEN 1 ELSE 0 END) = 0
+       AND agent_id NOT IN (SELECT agent_id FROM deliveries GROUP BY agent_id, substr(delivery_date, 1, 7) HAVING COUNT(*) > 1);
+  INSERT INTO agent_invoices (agent_id, month, date, amount, number, note)
+    SELECT t.agent_id, strftime('%Y-%m', t.delivery_date, 'start of month', '-1 month'), t.delivery_date, t.received - t.credit, NULL,
+           NULLIF(trim(COALESCE(t.note, '') || CASE WHEN t.credit > 0 THEN ' (כולל זיכוי החזרות ' || printf('%.2f', t.credit) || ')' ELSE '' END), '')
+      FROM delivery_totals t
+     WHERE t.agent_id IN (SELECT agent_id FROM _v4_conv)
+     ORDER BY t.delivery_date, t.id;
+  DELETE FROM delivery_lines WHERE delivery_id IN (SELECT id FROM deliveries WHERE agent_id IN (SELECT agent_id FROM _v4_conv));
+  DELETE FROM deliveries WHERE agent_id IN (SELECT agent_id FROM _v4_conv);
+  CREATE TEMP TABLE _v4_guard (ok INTEGER CHECK (ok = 1));
+  INSERT INTO _v4_guard SELECT NOT EXISTS (
+    SELECT 1 FROM _v4_before b
+     WHERE abs(b.total
+       - COALESCE((SELECT SUM(t.received - t.credit) FROM delivery_totals t WHERE t.agent_id = b.agent_id), 0)
+       - COALESCE((SELECT SUM(i.amount) FROM agent_invoices i WHERE i.agent_id = b.agent_id), 0)) > 0.005);
+  DROP TABLE _v4_guard;
+  DROP TABLE _v4_conv;
+  DROP TABLE _v4_before;
+  `,
 ];

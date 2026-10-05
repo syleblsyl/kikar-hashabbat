@@ -1,8 +1,8 @@
 import type { Agent } from '../db/catalog';
-import type { PaymentConfirmation, Statement, StatementRow } from '../db/ops';
-import { fromIso, today } from '../lib/dates';
+import type { PaymentConfirmation, Statement, StatementRow } from '../db/billing';
+import { fromIso, monthName, today } from '../lib/dates';
 import { hebDate } from '../lib/hebrew';
-import { qty, shekelCents, shekelSmart } from '../lib/money';
+import { products, qty, shekelCents, shekelSmart } from '../lib/money';
 
 /* Documents that are sent to the agent (picture / PDF), written from the store's side. */
 
@@ -53,6 +53,16 @@ export function rangeText(st: Statement) {
   return 'כל התקופה';
 }
 
+/** Under an invoice: what our own stock says for that month. */
+function StockLine({ r }: { r: StatementRow }) {
+  if (!r.stock) return null;
+  return (
+    <small className="st-stock">
+      לפי הרישום שלנו: סחורה {shekelSmart(r.stock.goods)} · החזרות {shekelSmart(r.stock.credit)} · {shekelSmart(r.stock.expected)}
+    </small>
+  );
+}
+
 function RowLines({ r }: { r: StatementRow }) {
   if (r.lines.length === 0) return null;
   return (
@@ -68,6 +78,19 @@ function RowLines({ r }: { r: StatementRow }) {
       ))}
     </div>
   );
+}
+
+function rowTitle(r: StatementRow) {
+  if (r.kind === 'invoice') return `חשבונית על ${monthName(r.month!, true)}${r.number ? ` · מס׳ ${r.number}` : ''}`;
+  if (r.kind === 'goods') return 'סחורה';
+  if (r.kind === 'returns') return 'החזרות';
+  return `תשלום${r.method ? ` · ${r.method}` : ''}`;
+}
+
+function rowSub(r: StatementRow) {
+  if (r.kind === 'goods') return `${r.manual ? 'סכום בלי פירוט' : products(r.productCount ?? 0)} · עוד לא בחשבונית`;
+  if (r.kind === 'returns') return `על סחורה מ-${shortD(r.goodsDate ?? r.date)}`;
+  return r.note ?? '';
 }
 
 export function StatementDoc({ agent, st, details }: { agent: Agent; st: Statement; details: boolean }) {
@@ -88,13 +111,15 @@ export function StatementDoc({ agent, st, details }: { agent: Agent; st: Stateme
           </div>
         )}
         <div>
-          <span>סחורה שהתקבלה</span>
-          <b>{shekelSmart(st.delivered, { signed: true })}</b>
+          <span>חשבוניות</span>
+          <b>{shekelSmart(st.invoiced, { signed: true })}</b>
         </div>
-        <div>
-          <span>זיכוי החזרות</span>
-          <b className="minus">{shekelSmart(-st.credit).replace('-', '−')}</b>
-        </div>
+        {Math.abs(st.estimated) > 0.004 && (
+          <div>
+            <span>סחורה שעוד לא בחשבונית (פחות החזרות)</span>
+            <b>{shekelSmart(st.estimated, { signed: true }).replace('-', '−')}</b>
+          </div>
+        )}
         <div>
           <span>תשלומים</span>
           <b className="minus">{shekelSmart(-st.paid).replace('-', '−')}</b>
@@ -125,27 +150,22 @@ export function StatementDoc({ agent, st, details }: { agent: Agent; st: Stateme
           <div key={r.key} className={`st-row ${r.kind}`}>
             <span>{shortD(r.date)}</span>
             <span className="what">
-              <b>
-                {r.kind === 'delivery' ? 'חשבונית' : r.kind === 'returns' ? 'החזרות' : 'תשלום'}
-                {r.kind === 'payment' && r.method ? ` · ${r.method}` : ''}
-              </b>
-              {r.kind === 'payment' && r.note && <small>{r.note}</small>}
-              {r.kind === 'delivery' && <small>{r.manual ? `סכום כולל, בלי פירוט מוצרים${r.note ? ` · ${r.note}` : ''}` : r.sub}</small>}
-              {r.kind === 'returns' && <small>{r.sub}</small>}
+              <b>{rowTitle(r)}</b>
+              {rowSub(r) && <small>{rowSub(r)}</small>}
               {r.pendingReturns && <small className="warn">החזרות עוד לא נרשמו</small>}
+              {details && <StockLine r={r} />}
               {details && <RowLines r={r} />}
             </span>
-            <span className={r.amount < 0 ? 'minus' : ''}>
-              {r.kind === 'returns' && Math.abs(r.amount) < 0.004 ? 'ללא זיכוי' : shekelSmart(r.amount, { signed: true }).replace('-', '−')}
-            </span>
+            <span className={r.amount < 0 ? 'minus' : ''}>{shekelSmart(r.amount, { signed: true }).replace('-', '−')}</span>
             <span>{shekelSmart(r.balance).replace('-', '−')}</span>
           </div>
         ))}
       </div>
 
-      {st.pendingWeeks.length > 0 && (
+      {st.unbilled > 0.004 && st.closing > 0.004 && (
         <p className="doc-note">
-          שימו לב: בחשבוניות מ-{st.pendingWeeks.map((w) => shortD(w)).join(', ')} ההחזרות עוד לא נרשמו. אחרי הרישום היתרה תרד בסכום הזיכוי.
+          {st.unbilled < st.closing - 0.004 ? `מתוך היתרה, ${shekelSmart(st.unbilled)}` : 'כל היתרה'} לפי הרישום שלנו של סחורה שעוד לא הגיעה עליה חשבונית ({st.estimateMonths.slice(-3).map((m) => monthName(m)).join(', ')}). כשתגיע החשבונית, הסכום שלה יבוא במקום.
+          {st.openReturns ? ' בחלק מהסחורה הזו ההחזרות עוד לא נרשמו.' : ''}
         </p>
       )}
       <p className="doc-note">
@@ -204,8 +224,10 @@ export function ReceiptDoc({ agent, c }: { agent: Agent; c: PaymentConfirmation 
         </div>
       </div>
       <p className="doc-note">{after.tone === 'zero' ? 'החשבון סגור – אין חוב לאף צד.' : `${after.who}: ${shekelSmart(Math.abs(c.after))}.`}</p>
-      {c.pendingWeeks.length > 0 && (
-        <p className="doc-note">היתרה כוללת סחורה שעוד לא נרשמו לה החזרות. אחרי הרישום היא תרד בסכום הזיכוי.</p>
+      {c.unbilledAfter > 0.004 && c.after > 0.004 && (
+        <p className="doc-note">
+          {c.unbilledAfter < c.after - 0.004 ? `מתוך היתרה, ${shekelSmart(c.unbilledAfter)}` : 'כל היתרה'} סחורה שעוד לא הגיעה עליה חשבונית (לפי הרישום שלנו).
+        </p>
       )}
       <p className="doc-foot">
         {STORE} – יריד מעדני השבת · הופק {todayText()}
@@ -226,12 +248,12 @@ export function statementText(agent: Agent, st: Statement) {
     `תקופה: ${rangeText(st)}`,
     '',
     ...(st.from !== null ? [`יתרה קודמת: ${plain(shekelSmart(st.opening))}`] : []),
-    `סחורה שהתקבלה: ${plain(shekelSmart(st.delivered))}`,
-    `זיכוי החזרות: ${plain(shekelSmart(st.credit))}`,
+    `חשבוניות: ${plain(shekelSmart(st.invoiced))}`,
+    ...(Math.abs(st.estimated) > 0.004 ? [`סחורה שעוד לא בחשבונית (לפי הרישום שלנו): ${plain(shekelSmart(st.estimated))}`] : []),
     `תשלומים: ${plain(shekelSmart(st.paid))}`,
     `*${end.label}: ${plain(shekelSmart(Math.abs(st.closing)))}*`,
   ];
-  if (st.pendingWeeks.length) lines.push('', 'בחלק מהחשבוניות ההחזרות עוד לא נרשמו, אחריהן היתרה תרד.');
+  if (st.unbilled > 0.004 && st.closing > 0.004) lines.push('', `${st.unbilled < st.closing - 0.004 ? `מתוך זה ${plain(shekelSmart(st.unbilled))}` : 'כל היתרה'} סחורה שעוד לא הגיעה עליה חשבונית.`);
   lines.push('', 'אם משהו לא מסתדר – נבדוק יחד לפני התשלום. תודה!');
   return lines.join('\n');
 }
@@ -248,6 +270,9 @@ export function receiptText(agent: Agent, c: PaymentConfirmation) {
     ...(c.note ? [`הערה: ${c.note}`] : []),
     '',
     `*אחרי התשלום – ${after.label}${after.tone === 'zero' ? '' : `: ${plain(shekelSmart(Math.abs(c.after)))}`}*`,
+    ...(c.unbilledAfter > 0.004 && c.after > 0.004
+      ? [`(${c.unbilledAfter < c.after - 0.004 ? `מתוך זה ${plain(shekelSmart(c.unbilledAfter))}` : 'כל היתרה'} סחורה שעוד לא הגיעה עליה חשבונית)`]
+      : []),
     '',
     'תודה!',
   ].join('\n');

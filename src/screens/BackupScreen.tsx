@@ -24,7 +24,7 @@ export function BackupScreen() {
       await shareFile(`kikar-backup-${iso(today())}.json`, blob, 'גיבוי כיכר השבת');
       await markBackedUp();
       setLast(iso(today()));
-      toast(`הגיבוי מוכן: ${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} אספקות`);
+      toast(`הגיבוי מוכן: ${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} קבלות סחורה, ${s.invoices} חשבוניות`);
     } catch (e) {
       if (e instanceof ShareCancelled) toast('הגיבוי לא נשמר – צריך לבחור לאן לשלוח אותו');
       else {
@@ -58,7 +58,7 @@ export function BackupScreen() {
     const when = new Date(b.created_at).toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
     const ok = await ask({
       title: `לשחזר את הגיבוי מ-${when}?`,
-      text: `${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} אספקות, ${s.days} ימי הכנסה.\n\nכל הנתונים שבטלפון עכשיו יוחלפו בנתוני הגיבוי.`,
+      text: `${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} קבלות סחורה, ${s.invoices} חשבוניות, ${s.days} ימי הכנסה.\n\nכל הנתונים שבטלפון עכשיו יוחלפו בנתוני הגיבוי.`,
       ok: 'שחזור',
       danger: true,
     });

@@ -1,12 +1,15 @@
 import { getSetting, setSetting } from './repo';
 import { query, runSet } from './sqlite';
 import { MIGRATIONS } from './schema';
+import { convertLegacyTables } from './money';
 import { fromIso, iso, today } from '../lib/dates';
 
 // parents before children, so a restore can insert in this order
 const TABLES = [
   'categories',
   'agents',
+  'agent_invoices',
+  'invoice_checks',
   'products',
   'agent_products',
   'price_history',
@@ -44,7 +47,16 @@ export async function makeBackup(): Promise<Backup> {
 
 export function backupStats(b: Backup) {
   const n = (t: string) => b.tables[t]?.length ?? 0;
-  return { products: n('products'), agents: n('agents'), deliveries: n('deliveries'), days: new Set((b.tables.daily_income ?? []).map((r) => r.date)).size };
+  // a backup from before agent invoices is shown as it will be restored (converted)
+  const t = b.schema < 4 ? convertLegacyTables(b.tables) : b.tables;
+  const m = (k: string) => t[k]?.length ?? 0;
+  return {
+    products: n('products'),
+    agents: n('agents'),
+    deliveries: m('deliveries'),
+    invoices: m('agent_invoices'),
+    days: new Set((b.tables.daily_income ?? []).map((r) => r.date)).size,
+  };
 }
 
 export async function markBackedUp() {
@@ -57,7 +69,7 @@ export async function lastBackup(): Promise<string | null> {
 
 /** True when there is data worth protecting and the last backup is older than a week. */
 export async function backupDue(): Promise<boolean> {
-  const [row] = await query<{ n: number }>('SELECT (SELECT COUNT(*) FROM deliveries) + (SELECT COUNT(*) FROM daily_income) AS n');
+  const [row] = await query<{ n: number }>('SELECT (SELECT COUNT(*) FROM deliveries) + (SELECT COUNT(*) FROM agent_invoices) + (SELECT COUNT(*) FROM daily_income) AS n');
   if (Number(row?.n ?? 0) === 0) return false;
   const last = await lastBackup();
   if (!last) return true;
@@ -92,6 +104,8 @@ export function parseBackup(text: string): Backup {
 
 /** Replaces all data with the backup's (the PIN stays as it is on this phone). */
 export async function restoreBackup(b: Backup) {
+  // before version 4 a monthly invoice was typed in as stock: convert it the same way the database did
+  const tables = b.schema < 4 ? convertLegacyTables(b.tables) : b.tables;
   // only columns that exist in this version's tables (an older backup may have fewer)
   const known = new Map<string, Set<string>>();
   for (const t of TABLES) {
@@ -103,7 +117,7 @@ export async function restoreBackup(b: Backup) {
     set.push({ statement: t === 'settings' ? `DELETE FROM settings WHERE key NOT IN (${PRIVATE_SETTINGS.map((k) => `'${k}'`).join(', ')})` : `DELETE FROM ${t}` });
   }
   for (const t of TABLES) {
-    for (const row of b.tables[t] ?? []) {
+    for (const row of tables[t] ?? []) {
       if (t === 'settings' && PRIVATE_SETTINGS.includes(String(row.key))) continue;
       const cols = Object.keys(row).filter((c) => /^[a-z_]+$/.test(c) && known.get(t)?.has(c));
       if (cols.length === 0) continue;

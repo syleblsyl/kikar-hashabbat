@@ -74,9 +74,15 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
   return (res.values ?? []) as T[];
 }
 
+/** Goes up on every write, so cached reads know they are stale. */
+let version = 0;
+export const dataVersion = () => version;
+
 export async function run(sql: string, params: unknown[] = []): Promise<{ changes: number; lastId: number }> {
   const conn = await getDb();
+  version++;
   const res = await conn.run(sql, params as never[], true);
+  version++; // also after: a read that started during the write must not be kept
   await persist();
   return { changes: res.changes?.changes ?? 0, lastId: res.changes?.lastId ?? 0 };
 }
@@ -85,6 +91,8 @@ export async function run(sql: string, params: unknown[] = []): Promise<{ change
 export async function runSet(set: { statement: string; values?: unknown[] }[]) {
   if (set.length === 0) return;
   const conn = await getDb();
+  version++;
   await conn.executeSet(set.map((s) => ({ statement: s.statement, values: (s.values ?? []) as never[] })), true);
+  version++;
   await persist();
 }

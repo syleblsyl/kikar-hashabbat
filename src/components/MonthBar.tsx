@@ -23,24 +23,32 @@ export function parseYM(s: string | null | undefined): YM | null {
   return y >= 2000 && y <= 2100 && mo >= 0 && mo <= 11 ? { y, m: mo } : null;
 }
 
-type Props = { ym: YM; onChange: (ym: YM) => void };
+type Props = {
+  ym: YM;
+  onChange: (ym: YM) => void;
+  /** the month a tap on the label goes back to, and that gets the tag (default: this month) */
+  anchor?: YM;
+  /** text of the tag on the anchor month (default "החודש") */
+  tag?: string;
+};
 
 /** Month switcher: Gregorian month with the Hebrew months it covers. */
-export function MonthBar({ ym, onChange }: Props) {
+export function MonthBar({ ym, onChange, anchor, tag = 'החודש' }: Props) {
   const now = thisMonth();
-  const isCurrent = sameYM(ym, now);
+  const home = anchor ?? now;
+  const isCurrent = sameYM(ym, home);
   const future = ym.y > now.y || (ym.y === now.y && ym.m >= now.m);
   return (
     <div className="switcher">
       <button type="button" aria-label="החודש הקודם" onClick={() => onChange(addMonths(ym, -1))}>
         <Icon name="prev" stroke={2.5} />
       </button>
-      <button type="button" className="label" onClick={() => onChange(now)} aria-label="חזרה לחודש הנוכחי">
+      <button type="button" className="label" onClick={() => onChange(home)} aria-label={anchor ? `חזרה ל${MONTHS[home.m]}` : 'חזרה לחודש הנוכחי'}>
         <b>
           {MONTHS[ym.m]} {ym.y}
         </b>
         <span>{hebMonthsOf(ym.y, ym.m)}</span>
-        {isCurrent && <em>החודש</em>}
+        {isCurrent && <em>{tag}</em>}
       </button>
       <button type="button" aria-label="החודש הבא" disabled={future} onClick={() => onChange(addMonths(ym, 1))}>
         <Icon name="next" stroke={2.5} />

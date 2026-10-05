@@ -5,7 +5,7 @@ import { DocShare } from '../components/DocShare';
 import { Icon } from '../components/Icon';
 import { SubBar } from '../components/SubBar';
 import { getAgent, type Agent } from '../db/catalog';
-import { paymentConfirmation, type PaymentConfirmation } from '../db/ops';
+import { paymentConfirmation, type PaymentConfirmation } from '../db/billing';
 import { shekelSmart } from '../lib/money';
 import { myBalanceWords } from '../components/AgentDocs';
 

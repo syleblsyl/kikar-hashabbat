@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ask, askText } from '../components/Dialog';
-import { useLeaveGuard } from '../components/guard';
+import { canLeave, useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
 import { matches, SearchBox } from '../components/SearchBox';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
-import { pendingReturnInvoices, returnsForInvoice, saveReturns, saveReturnsAmount, type InvoiceRow, type ReturnsAgent } from '../db/ops';
-import { DAY_SHORT, fromIso, iso, shortDate, startOfWeek, today } from '../lib/dates';
+import { pendingReturns, returnsFor, saveReturns, saveReturnsAmount, type StockRow, type ReturnsAgent } from '../db/ops';
+import { loadInvoices } from '../db/billing';
+import { addDays, DAY_SHORT, fromIso, iso, monthName, monthOf, shortDate, startOfWeek, today } from '../lib/dates';
 import { hebDayMonth } from '../lib/hebrew';
 import { parseAmountStrict, qty, shekelCents, shekelSmart } from '../lib/money';
 import { useBack } from '../components/useBack';
 import { initialOf } from './Agents';
 
-/** Returns: the list of invoices still waiting, or the form for one invoice (?invoice=id). */
+/** Returns: the list of goods still waiting, or the form for one delivery of goods (?invoice=id). */
 export function Returns() {
   const [params] = useSearchParams();
   const invoiceId = Number(params.get('invoice')) || 0;
@@ -21,25 +22,25 @@ export function Returns() {
 }
 
 function ReturnsList() {
-  const [rows, setRows] = useState<InvoiceRow[] | null>(null);
+  const [rows, setRows] = useState<StockRow[] | null>(null);
   const [q, setQ] = useState('');
   useEffect(() => {
-    pendingReturnInvoices(false).then(setRows);
+    pendingReturns(false).then(setRows);
   }, []);
   const dueBefore = iso(startOfWeek(today()));
   const shown = (rows ?? []).filter((r) => matches(r.agent, q) || matches(r.note, q));
 
   return (
     <>
-      <SubBar title="החזרות" sub="חשבוניות שעוד לא נרשמו להן החזרות" />
+      <SubBar title="החזרות" sub="סחורה שעוד לא נרשמו לה החזרות" />
       {(rows?.length ?? 0) > 4 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן" className="pad-x" />}
       {!rows ? (
         <p className="hint" style={{ textAlign: 'center' }}>טוען…</p>
       ) : rows.length === 0 ? (
         <div className="card empty-card">
-          <p>אין חשבוניות שמחכות להחזרות.</p>
-          <Link to="/invoices" className="btn small ghost" style={{ width: 'auto', padding: '0 20px' }}>
-            לכל החשבוניות
+          <p>אין סחורה שמחכה להחזרות.</p>
+          <Link to="/stock" className="btn small ghost" style={{ width: 'auto', padding: '0 20px' }}>
+            למלאי
           </Link>
         </div>
       ) : (
@@ -53,8 +54,8 @@ function ReturnsList() {
                 <span className="grow">
                   <b>{r.agent}</b>
                   <span>
-                    חשבונית {DAY_SHORT[d.getDay()]} {d.getDate()}.{d.getMonth() + 1} · {shekelSmart(r.received)}
-                    {r.manual ? ' · לפי סכום' : ''}
+                    סחורה {DAY_SHORT[d.getDay()]} {d.getDate()}.{d.getMonth() + 1} · {shekelSmart(r.received)}
+                    {r.manual ? ' · סכום בלי פירוט' : ''}
                   </span>
                 </span>
                 <span className={`pill ${due ? 'gold' : ''}`} style={due ? undefined : { background: 'var(--chip)', color: 'var(--ink2)' }}>
@@ -72,6 +73,7 @@ function ReturnsList() {
 
 function ReturnsForm({ invoiceId }: { invoiceId: number }) {
   const [, setParams] = useSearchParams();
+  const nav = useNavigate();
   const back = useBack();
   const [cur, setCur] = useState<ReturnsAgent | null | undefined>(undefined);
   const [date, setDate] = useState(iso(today()));
@@ -80,20 +82,27 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
   const [productQ, setProductQ] = useState('');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [hasInvoice, setHasInvoice] = useState(false);
 
   useLeaveGuard(dirty);
 
   useEffect(() => {
-    returnsForInvoice(invoiceId).then((r) => {
+    returnsFor(invoiceId).then((r) => {
       setCur(r);
       if (!r) return;
-      const t = iso(today());
-      setDate(r.returns_date ?? (t < r.delivery_date ? r.delivery_date : t));
+      setDate(r.returns_date ?? defaultReturnsDate(r.delivery_date));
       // an invoice recorded as a sum can only be credited as a sum; otherwise open the way it was saved
       setMode(r.manual_amount != null || r.manual_credit != null ? 'amount' : 'items');
       setCreditText(r.manual_credit != null && r.manual_credit > 0 ? String(r.manual_credit) : '');
     });
   }, [invoiceId]);
+
+  // the returns count in their month: does that month already have the agent's invoice?
+  const creditMonth = monthOf(date);
+  useEffect(() => {
+    if (!cur) return;
+    loadInvoices({ agentId: cur.agent_id, month: creditMonth }).then((l) => setHasInvoice(l.length > 0));
+  }, [cur?.agent_id, creditMonth]);
 
   if (cur === undefined) return <SubBar title="החזרות" />;
   if (cur === null) {
@@ -101,7 +110,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
       <>
         <SubBar title="החזרות" />
         <div className="card empty-card">
-          <p>החשבונית הזו לא נמצאה (אולי נמחקה).</p>
+          <p>הסחורה הזו לא נמצאה (אולי נמחקה).</p>
         </div>
       </>
     );
@@ -126,7 +135,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
     if (!cur) return;
     if (mode === 'amount' && !nothingLeft) {
       if (creditAmount === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 300 או 120.50', 'err');
-      if (creditAmount > cur.received + 0.004) return toast(`הזיכוי לא יכול להיות יותר מהחשבונית (${shekelSmart(cur.received)})`, 'err');
+      if (creditAmount > cur.received + 0.004) return toast(`הזיכוי לא יכול להיות יותר משווי הסחורה (${shekelSmart(cur.received)})`, 'err');
     }
     setSaving(true);
     try {
@@ -137,8 +146,8 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
         await saveReturns(cur.delivery_id, date, items);
       }
       setDirty(false);
-      // straight on to the next invoice that is due
-      const next = (await pendingReturnInvoices()).find((r) => r.id !== cur.delivery_id);
+      // straight on to the next goods that are due
+      const next = (await pendingReturns()).find((r) => r.id !== cur.delivery_id);
       if (next) {
         toast(`נשמר ✓ עכשיו ${next.agent}`);
         setParams({ invoice: String(next.id) }, { replace: true });
@@ -155,7 +164,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
 
   async function nothingLeft() {
     if (!cur) return;
-    const ok = await ask({ title: `לא נשאר כלום מ${cur.name}?`, text: 'הכול נמכר, אין זיכוי על החשבונית הזו.', ok: 'כן, לא נשאר כלום' });
+    const ok = await ask({ title: `לא נשאר כלום מ${cur.name}?`, text: 'הכול נמכר, אין זיכוי על הסחורה הזו.', ok: 'כן, לא נשאר כלום' });
     if (ok) save(true);
   }
 
@@ -168,7 +177,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <h1 className="page-title">החזרות · {cur.name}</h1>
           <span className="sub" style={{ fontSize: 14 }}>
-            על חשבונית מ{DAY_SHORT[inv.getDay()]} {inv.getDate()}.{inv.getMonth() + 1} · {hebDayMonth(inv)}
+            על סחורה מ{DAY_SHORT[inv.getDay()]} {inv.getDate()}.{inv.getMonth() + 1} · {hebDayMonth(inv)}
           </span>
         </div>
         <label className="date-chip">
@@ -183,7 +192,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
               const v = e.target.value;
               if (!v) return;
               if (v < cur.delivery_date) {
-                toast('ההחזרה לא יכולה להיות לפני תאריך החשבונית', 'err');
+                toast('ההחזרה לא יכולה להיות לפני שהסחורה הגיעה', 'err');
                 return;
               }
               setDate(v);
@@ -193,9 +202,13 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
         </label>
       </header>
 
+      <p className="mode-note">
+        הזיכוי נכנס ל{monthName(creditMonth)}
+        {hasInvoice ? ` · ל${monthName(creditMonth)} כבר רשומה חשבונית, וההחזרה תיכנס לבדיקה מולה` : ''}
+      </p>
       <div className="pad list-top">
         <span>
-          חשבונית {shekelSmart(received)}
+          סחורה {shekelSmart(received)}
           {cur.returns_done ? ` · ההחזרות נרשמו ${cur.returns_date ? shortDate(fromIso(cur.returns_date)) : ''} · אפשר לתקן` : ''}
         </span>
         <b>נטו {shekelSmart(received - credit)}</b>
@@ -203,7 +216,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
 
       {!canReturn ? (
         <div className="card empty-card" style={{ marginTop: 0 }}>
-          <p>בחשבונית הזו אין מה להחזיר{bySum ? ' (נרשם שאין עליה החזרות)' : ' (כל המוצרים בלי החזרה)'}.</p>
+          <p>בסחורה הזו אין מה להחזיר{bySum ? ' (נרשם שאין עליה החזרות)' : ' (כל המוצרים בלי החזרה)'}.</p>
         </div>
       ) : (
         <div className="pad" style={{ marginBottom: 10 }}>
@@ -231,10 +244,10 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
                 setDirty(true);
               }}
             >
-              לפי סכום
+              סכום זיכוי
             </button>
           </div>
-          {bySum && <p className="hint" style={{ margin: '6px 2px 0' }}>החשבונית נרשמה לפי סכום, ולכן גם ההחזרה נרשמת כסכום.</p>}
+          {bySum && <p className="hint" style={{ margin: '6px 2px 0' }}>הסחורה נרשמה כסכום בלי פירוט, ולכן גם ההחזרה נרשמת כסכום.</p>}
         </div>
       )}
 
@@ -261,7 +274,7 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
           </div>
           {creditAmount === null && <div className="field-err">כותבים רק מספר, למשל 300 או 120.50</div>}
           <span className="hint">
-            החשבונית: {shekelSmart(received)} · אחרי הזיכוי: {shekelSmart(received - credit)}
+            הסחורה: {shekelSmart(received)} · אחרי הזיכוי: {shekelSmart(received - credit)}
           </span>
           {!cur.returns_done && credit === 0 && (
             <button type="button" className="btn ghost small" onClick={nothingLeft} disabled={saving}>
@@ -343,7 +356,18 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
         </>
       ) : null}
 
-      <Link to={`/agent/${cur.agent_id}?pay=1`} className="center-link pay-link">
+      <Link
+        to={`/agent/${cur.agent_id}?pay=1`}
+        className="center-link pay-link"
+        onClick={async (e) => {
+          if (!dirty) return;
+          e.preventDefault();
+          if (await canLeave()) {
+            setDirty(false);
+            nav(`/agent/${cur.agent_id}?pay=1`);
+          }
+        }}
+      >
         <Icon name="wallet" size={18} /> שילמת ל{cur.name} בכסף? לרישום תשלום
       </Link>
 
@@ -363,4 +387,13 @@ function ReturnsForm({ invoiceId }: { invoiceId: number }) {
       </div>
     </>
   );
+}
+
+/** Agents collect returns on Sunday: the first Sunday after the goods arrived, but not later than today. */
+function defaultReturnsDate(deliveryDate: string): string {
+  const d = fromIso(deliveryDate);
+  const sunday = iso(addDays(startOfWeek(d), 7));
+  const t = iso(today());
+  const pick = sunday < t ? sunday : t;
+  return pick < deliveryDate ? deliveryDate : pick;
 }

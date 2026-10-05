@@ -57,9 +57,11 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     [
       { k: 'הכנסות ברוטו', v: r.income },
       ...r.byMethod.map((m) => ({ k: `   ${m.name}`, v: m.total })),
-      { k: 'חשבוניות מהסוכנים', v: r.received },
-      { k: 'זיכוי מהחזרות', v: -r.credit },
-      { k: 'חשבוניות נטו (אחרי החזרות)', v: r.goodsNet },
+      { k: 'מלאי: סחורה שהגיעה', v: r.received },
+      { k: 'מלאי: החזרות החודש', v: -r.credit },
+      { k: 'לפי המלאי', v: r.expected },
+      { k: 'חשבוניות הסוכנים על החודש', v: r.invoiced },
+      { k: 'חיובי סוכנים (חשבונית, ואם אין – מלאי)', v: r.charges },
       { k: 'שולם לסוכנים החודש', v: r.paid },
       { k: 'הוצאות (קבועות ופועלים)', v: r.expenses },
       ...r.byType.map((t) => ({ k: `   ${t.name}`, v: t.total })),
@@ -72,12 +74,16 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
   sum.addRow({});
   const wh = sum.addRow({ k: 'לפי שבועות' });
   wh.font = { bold: true, size: 13 };
-  const hdr = sum.addRow(['שבוע', 'הכנסות', r.mode === 'paid' ? 'שולם לסוכנים' : 'חיובי סוכנים', 'הוצאות', 'נשאר בקופה']);
+  const hdr = sum.addRow(['שבוע', 'הכנסות', 'מלאי', 'הוצאות', 'נשאר בקופה']);
   hdr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   hdr.eachCell((c) => (c.fill = HEAD_FILL));
   for (const w of r.weeks) {
-    const row = sum.addRow([`${w.title} (${dmy(w.from)}–${dmy(w.to)})`, w.income, r.mode === 'paid' ? w.paid : w.goods, w.expenses, w.net]);
+    const row = sum.addRow([`${w.title} (${dmy(w.from)}–${dmy(w.to)})`, w.income, w.goods, w.expenses, w.net]);
     [2, 3, 4, 5].forEach((i) => (row.getCell(i).numFmt = MONEY));
+  }
+  if (Math.abs(r.correction) >= 1) {
+    const row = sum.addRow(['תיקון לפי החשבוניות (מול המלאי)', '', '', '', -r.correction]);
+    row.getCell(5).numFmt = MONEY;
   }
   [3, 4, 5].forEach((i) => (sum.getColumn(i).width = 16));
 
@@ -101,9 +107,9 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     { date: 'סה״כ', ...Object.fromEntries(r.byMethod.map((m, i) => [`m${i}`, m.total])), total: r.income },
   );
 
-  // 3. deliveries
+  // 3. stock: goods
   sheet(
-    'אספקות',
+    'מלאי – סחורה',
     [
       { header: 'תאריך', key: 'date', width: 12 },
       { header: 'שבוע', key: 'week', width: 20 },
@@ -113,7 +119,7 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
       { header: 'הוחזר', key: 'returned', width: 8 },
       { header: 'נמכר', key: 'sold', width: 8 },
       { header: 'מחיר קנייה', key: 'cost', width: 12, money: true },
-      { header: 'עלות נטו', key: 'net', width: 14, money: true },
+      { header: 'שווי הסחורה', key: 'net', width: 14, money: true },
       { header: 'הערה', key: 'note', width: 16 },
     ],
     r.deliveryRows.map((l) => ({
@@ -128,21 +134,63 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
       net: l.net,
       note: !l.returnable ? 'ללא החזרה' : !l.returnsDone ? 'החזרות לא נרשמו' : '',
     })),
-    { date: 'סה״כ', net: r.goodsNet },
+    { date: 'סה״כ', net: r.received },
   );
 
-  // 4. agents
+  // 3b. stock: returns recorded this month
+  sheet(
+    'מלאי – החזרות',
+    [
+      { header: 'תאריך ההחזרה', key: 'date', width: 13 },
+      { header: 'סוכן', key: 'agent', width: 20 },
+      { header: 'על סחורה מתאריך', key: 'goods', width: 15 },
+      { header: 'זיכוי', key: 'credit', width: 14, money: true },
+      { header: 'הערה', key: 'note', width: 16 },
+    ],
+    r.creditRows.map((c) => ({ date: dmy(c.date), agent: c.agent, goods: dmy(c.goodsDate), credit: c.credit, note: c.sum ? 'זיכוי בסכום' : '' })),
+    { date: 'סה״כ', credit: r.credit },
+  );
+
+  // 4. agents' invoices and the check against the stock
+  const STATE: Record<string, string> = { match: 'תואם', mismatch: 'הפרש', checked: 'הפרש – נבדק', waiting: 'ממתין לחשבונית', 'no-stock': 'בלי מלאי', merged: 'נכלל בחודש הבא', empty: '' };
+  sheet(
+    'חשבוניות',
+    [
+      { header: 'תאריך קבלה', key: 'date', width: 13 },
+      { header: 'סוכן', key: 'agent', width: 20 },
+      { header: 'מספר', key: 'number', width: 12 },
+      { header: 'סכום', key: 'amount', width: 14, money: true },
+      { header: 'בדיקה מול המלאי', key: 'state', width: 16 },
+      { header: 'הערה', key: 'note', width: 22 },
+    ],
+    r.invoiceRows.map((i) => ({ date: dmy(i.date), agent: i.agent, number: i.number, amount: i.amount, state: STATE[i.state] ?? '', note: i.note })),
+    { date: 'סה״כ', amount: r.invoiced },
+  );
   sheet(
     'לפי סוכן',
     [
       { header: 'סוכן', key: 'name', width: 22 },
-      { header: 'חשבוניות', key: 'received', width: 15, money: true },
-      { header: 'זיכוי החזרות', key: 'returned', width: 15, money: true },
-      { header: 'עלות נטו', key: 'net', width: 15, money: true },
-      { header: 'שולם החודש', key: 'paid', width: 15, money: true },
+      { header: 'סחורה', key: 'received', width: 14, money: true },
+      { header: 'החזרות', key: 'returned', width: 14, money: true },
+      { header: 'לפי המלאי', key: 'expected', width: 14, money: true },
+      { header: 'חשבונית', key: 'invoiced', width: 14, money: true },
+      { header: 'הפרש', key: 'diff', width: 12, money: true },
+      { header: 'בדיקה', key: 'state', width: 16 },
+      { header: 'חיוב החודש', key: 'charge', width: 14, money: true },
+      { header: 'שולם החודש', key: 'paid', width: 14, money: true },
     ],
-    r.agents.map((a) => ({ name: a.name, received: a.received, returned: a.returned, net: a.net, paid: a.paid })),
-    { name: 'סה״כ', received: r.received, returned: r.credit, net: r.goodsNet, paid: r.paid },
+    r.agents.map((a) => ({
+      name: a.name,
+      received: a.received,
+      returned: a.returned,
+      expected: a.expected,
+      invoiced: a.invoiceCount ? a.invoiced : '',
+      diff: a.state === 'mismatch' || a.state === 'checked' ? a.diff : '',
+      state: STATE[a.state] ?? '',
+      charge: a.charge,
+      paid: a.paid,
+    })),
+    { name: 'סה״כ', received: r.received, returned: r.credit, expected: r.expected, invoiced: r.invoiced, charge: r.charges, paid: r.paid },
   );
 
   // 5. products

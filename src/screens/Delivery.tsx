@@ -8,25 +8,16 @@ import { Stepper } from '../components/Stepper';
 import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
 import { getAgent, listAgents, type Agent } from '../db/catalog';
-import {
-  balanceOf,
-  deleteDelivery,
-  getInvoice,
-  invoiceItems,
-  lastInvoiceOf,
-  saveInvoiceAmount,
-  saveInvoiceItems,
-  type Delivery as Invoice,
-  type DeliveryItem,
-} from '../db/ops';
-import { fromIso, iso, parseIso, shortDate, today } from '../lib/dates';
+import { deleteDelivery, getStock, lastStockOf, saveStockAmount, saveStockItems, stockItems, type Delivery as Goods, type DeliveryItem } from '../db/ops';
+import { loadInvoices, stateOf } from '../db/billing';
+import { addMonthKey, dm, fromIso, iso, monthName, monthOf, parseIso, shortDate, today } from '../lib/dates';
 import { hebDayMonth } from '../lib/hebrew';
 import { parseAmountStrict, qty, shekelCents, shekelSmart } from '../lib/money';
 import { useBack } from '../components/useBack';
 
 type Mode = 'items' | 'amount';
 
-/** One invoice from an agent: per product, or just the sum I owe for it. */
+/** Goods that arrived from an agent (stock): per product, or just what they are worth. */
 export function Delivery() {
   const { id } = useParams();
   const [params] = useSearchParams();
@@ -34,7 +25,7 @@ export function Delivery() {
   const isNew = !id || id === 'new';
   const [state, setState] = useState<'loading' | 'ready' | 'missing'>('loading');
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [existing, setExisting] = useState<Invoice | null>(null);
+  const [existing, setExisting] = useState<Goods | null>(null);
   const [agentId, setAgentId] = useState(0);
   const [agentQ, setAgentQ] = useState('');
   const [picking, setPicking] = useState(false);
@@ -52,17 +43,17 @@ export function Delivery() {
 
   useLeaveGuard(dirty);
 
-  // the invoice (when editing) and the agents to choose from
+  // the goods (when editing) and the agents to choose from
   useEffect(() => {
     (async () => {
       const list = await listAgents();
-      let inv: Invoice | null = null;
+      let inv: Goods | null = null;
       if (!isNew) {
-        inv = Number.isFinite(Number(id)) ? await getInvoice(Number(id)) : null;
+        inv = Number.isFinite(Number(id)) ? await getStock(Number(id)) : null;
         if (!inv) return setState('missing');
       }
       const want = inv?.agent_id ?? (Number(params.get('agent')) || 0);
-      // a hidden agent can still be opened (to fix or delete an old invoice)
+      // a hidden agent can still be opened (to fix or delete old goods)
       if (want && !list.some((a) => a.id === want)) {
         const hidden = await getAgent(want);
         if (hidden) list.push(hidden);
@@ -86,7 +77,7 @@ export function Delivery() {
     if (!agentId || state !== 'ready') return;
     let alive = true;
     (async () => {
-      const [its, last] = await Promise.all([invoiceItems(agentId, existing?.id ?? null), lastInvoiceOf(agentId, existing?.id ?? 0)]);
+      const [its, last] = await Promise.all([stockItems(agentId, existing?.id ?? null), lastStockOf(agentId, existing?.id ?? 0)]);
       if (!alive) return;
       setItems(its);
       setPrevSum(last?.received ?? 0);
@@ -143,27 +134,40 @@ export function Delivery() {
       if (amount === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 2500 או 1250.50', 'err');
       if (amount <= 0) {
         amountRef.current?.focus();
-        return toast('צריך לכתוב כמה צריך לשלם לסוכן', 'err');
+        return toast('צריך לכתוב כמה שווה הסחורה', 'err');
       }
-      if (hadLines && !(await ask({ title: 'לעבור לסכום?', text: 'הכמויות שנרשמו למוצרים בחשבונית הזו יימחקו, ובמקומן יישמר רק הסכום.', ok: 'כן, לשמור כסכום' })))
+      // the agent's monthly invoice typed in here by habit would be counted twice
+      const near = (await loadInvoices({ agentId: agent.id })).filter((i) => i.month >= addMonthKey(monthOf(date), -2) && Math.abs(i.amount - amount) < 1).pop();
+      if (
+        near &&
+        !(await ask({
+          title: 'זו החשבונית החודשית?',
+          text: `הסכום שווה לחשבונית של ${agent.name} על ${monthName(near.month)}.\nאת החשבונית החודשית רושמים ב"חשבוניות", לא במלאי – אחרת היא נספרת פעמיים.`,
+          ok: 'זה מלאי, לשמור',
+          cancel: 'לא לשמור',
+        }))
+      )
+        return;
+      if (hadLines && !(await ask({ title: 'לעבור לסכום?', text: 'הכמויות שנרשמו למוצרים יימחקו, ובמקומן יישמר רק הסכום.', ok: 'כן, לשמור כסכום' })))
         return;
     } else {
       if (!existing && units === 0) return toast('צריך לרשום כמה הגיע לפחות ממוצר אחד', 'err');
       if (hadSum && !(await ask({ title: 'לעבור לפי מוצרים?', text: 'הסכום שנרשם יוחלף בחישוב לפי הכמויות של המוצרים.', ok: 'כן, לפי מוצרים' }))) return;
-      if (existing && units === 0 && !(await ask({ title: 'למחוק את החשבונית?', text: 'כל הכמויות אפס, ולכן החשבונית תימחק.', ok: 'מחיקה', danger: true })))
+      if (existing && units === 0 && !(await ask({ title: 'למחוק את הסחורה?', text: 'כל הכמויות אפס, ולכן הרישום יימחק.', ok: 'מחיקה', danger: true })))
         return;
     }
     setSaving(true);
     try {
-      if (mode === 'amount') await saveInvoiceAmount(existing?.id ?? null, agent.id, date, amount ?? 0, note, returnable);
-      else await saveInvoiceItems(existing?.id ?? null, agent.id, date, items);
-      const bal = await balanceOf(agent.id);
+      if (mode === 'amount') await saveStockAmount(existing?.id ?? null, agent.id, date, amount ?? 0, note, returnable);
+      else await saveStockItems(existing?.id ?? null, agent.id, date, items);
+      const mk = monthOf(date);
+      const st = await stateOf(agent.id, mk);
       toast(
-        bal > 0.004
-          ? `נשמר ✓ עכשיו אני חייב ל${agent.name} ${shekelSmart(bal)}`
-          : bal < -0.004
-            ? `נשמר ✓ יש לי פלוס של ${shekelSmart(-bal)} אצל ${agent.name}`
-            : 'נשמר ✓ החשבון עם הסוכן מאוזן',
+        st.state === 'match'
+          ? `נשמר ✓ המלאי של ${monthName(mk)} תואם לחשבונית`
+          : st.state === 'mismatch'
+            ? `נשמר · הפרש מול החשבונית של ${monthName(mk)}: ${shekelSmart(Math.abs(st.diff))}`
+            : `נשמר ✓ נכנס למלאי של ${monthName(mk)}`,
       );
       setDirty(false);
       back({ force: true });
@@ -177,14 +181,14 @@ export function Delivery() {
   async function remove() {
     if (!existing || !agent) return;
     const ok = await ask({
-      title: `למחוק את החשבונית של ${agent.name}?`,
-      text: 'החשבונית תימחק, וגם ההחזרות שנרשמו עליה. החוב לסוכן יירד בהתאם.',
+      title: `למחוק את הסחורה של ${agent.name} מ-${dm(existing.delivery_date)}?`,
+      text: 'הרישום יימחק, וגם ההחזרות שנרשמו עליו.',
       ok: 'מחיקה',
       danger: true,
     });
     if (!ok) return;
     await deleteDelivery(existing.id);
-    toast('החשבונית נמחקה');
+    toast('הסחורה נמחקה');
     setDirty(false);
     back({ force: true });
   }
@@ -192,10 +196,10 @@ export function Delivery() {
   if (state === 'missing') {
     return (
       <>
-        <SubBar title="חשבונית" />
+        <SubBar title="סחורה" />
         <div className="card empty-card">
-          <p>החשבונית הזו לא נמצאה (אולי נמחקה).</p>
-          <Link to="/invoices" className="btn small" style={{ width: 'auto', padding: '0 20px' }}>לכל החשבוניות</Link>
+          <p>הסחורה הזו לא נמצאה (אולי נמחקה).</p>
+          <Link to="/stock" className="btn small" style={{ width: 'auto', padding: '0 20px' }}>למלאי</Link>
         </div>
       </>
     );
@@ -203,9 +207,9 @@ export function Delivery() {
   if (state === 'ready' && agents.length === 0) {
     return (
       <>
-        <SubBar title="חשבונית חדשה" />
+        <SubBar title="קבלת סחורה" />
         <div className="card empty-card">
-          <p>כדי לרשום חשבונית צריך קודם להוסיף סוכן.</p>
+          <p>כדי לרשום סחורה צריך קודם להוסיף סוכן.</p>
           <Link to="/agent/new" className="btn small" style={{ width: 'auto', padding: '0 20px' }}>
             <Icon name="plus" /> הוספת סוכן
           </Link>
@@ -224,7 +228,7 @@ export function Delivery() {
           <Icon name="back" />
         </button>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <h1 className="page-title">{existing ? 'חשבונית' : 'חשבונית חדשה'}</h1>
+          <h1 className="page-title">{existing ? 'סחורה' : 'קבלת סחורה'}</h1>
           {agent && <span className="sub" style={{ fontSize: 14 }}>{agent.name}</span>}
         </div>
         <label className="date-chip">
@@ -232,7 +236,7 @@ export function Delivery() {
           {shortDate(fromIso(date))}
           <input
             type="date"
-            aria-label="תאריך החשבונית"
+            aria-label="התאריך שהסחורה הגיעה"
             value={date}
             onChange={(e) => {
               if (!e.target.value) return;
@@ -242,12 +246,14 @@ export function Delivery() {
           />
         </label>
       </header>
-      <p className="mode-note">{hebDayMonth(fromIso(date))}</p>
+      <p className="mode-note">
+        {hebDayMonth(fromIso(date))} · נכנס למלאי של {monthName(monthOf(date))}
+      </p>
 
       {/* which agent */}
       {!existing && (!agentId || picking) ? (
         <section className="pad" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
-          <b style={{ fontSize: 17 }}>מאיזה סוכן החשבונית?</b>
+          <b style={{ fontSize: 17 }}>מאיזה סוכן הסחורה?</b>
           {agents.length > 6 && <SearchBox value={agentQ} onChange={setAgentQ} placeholder="חיפוש סוכן" />}
           <div className="agent-pick">
             {shownAgents.map((a) => (
@@ -274,12 +280,12 @@ export function Delivery() {
       {agent && (
         <>
           <div className="pad" style={{ marginBottom: 10 }}>
-            <div className="segment" role="radiogroup" aria-label="איך לרשום את החשבונית">
+            <div className="segment" role="radiogroup" aria-label="איך לרשום את הסחורה">
               <button type="button" role="radio" aria-checked={mode === 'items'} className={mode === 'items' ? 'on' : ''} onClick={() => chooseMode('items')}>
                 לפי מוצרים
               </button>
               <button type="button" role="radio" aria-checked={mode === 'amount'} className={mode === 'amount' ? 'on' : ''} onClick={() => chooseMode('amount')}>
-                לפי סכום
+                סכום בלי פירוט
               </button>
             </div>
           </div>
@@ -287,8 +293,9 @@ export function Delivery() {
           {mode === 'amount' ? (
             <section className="card box sum-box">
               <label className="lbl" htmlFor="dsum">
-                כמה אני צריך לשלם ל{agent.name} על החשבונית הזו?
+                כמה שווה הסחורה הזו?
               </label>
+              <span className="hint" style={{ marginTop: -6 }}>זה לא החשבונית החודשית – אותה רושמים ב״חשבוניות״</span>
               <div className={`money-in big${amount === null ? ' bad' : ''}`}>
                 <input
                   id="dsum"
@@ -318,14 +325,14 @@ export function Delivery() {
                       setDirty(true);
                     }}
                   >
-                    כמו בחשבונית הקודמת · {shekelSmart(prevSum)}
+                    כמו בפעם הקודמת · {shekelSmart(prevSum)}
                   </button>
                 </div>
               )}
               <input
                 className="input"
                 style={{ fontSize: 16, fontWeight: 600, height: 48 }}
-                placeholder="הערה, למשל מספר חשבונית (לא חובה)"
+                placeholder="הערה (לא חובה)"
                 aria-label="הערה"
                 value={note}
                 onChange={(e) => {
@@ -335,7 +342,7 @@ export function Delivery() {
               />
               <div className="line" style={{ gap: 12 }}>
                 <span className="name" style={{ fontSize: 16 }}>
-                  יש החזרות על החשבונית
+                  יש החזרות על הסחורה
                   <small className="hint" style={{ display: 'block', fontWeight: 500 }}>
                     {returnable ? 'במסך ההחזרות רושמים כמה זיכוי מגיע' : 'לא יופיע במסך ההחזרות'}
                   </small>
@@ -344,7 +351,7 @@ export function Delivery() {
                   type="button"
                   role="switch"
                   aria-checked={returnable}
-                  aria-label="יש החזרות על החשבונית"
+                  aria-label="יש החזרות על הסחורה"
                   className={`switch${returnable ? ' on' : ''}`}
                   onClick={() => {
                     setReturnable((r) => !r);
@@ -357,9 +364,9 @@ export function Delivery() {
             </section>
           ) : items && items.length === 0 ? (
             <div className="card empty-card">
-              <p>ל{agent.name} עוד אין מוצרים במחירון. אפשר לרשום את החשבונית לפי סכום, או להוסיף לו מוצרים.</p>
+              <p>ל{agent.name} עוד אין מוצרים במחירון. אפשר לרשום את הסחורה כסכום בלי פירוט, או להוסיף לו מוצרים.</p>
               <button type="button" className="btn small" style={{ width: 'auto', padding: '0 20px' }} onClick={() => chooseMode('amount')}>
-                רישום לפי סכום
+                רישום כסכום
               </button>
               <Link to={`/product/new?agent=${agentId}`} className="btn small ghost" style={{ width: 'auto', padding: '0 20px' }}>
                 <Icon name="plus" /> מוצר חדש לסוכן
@@ -375,7 +382,7 @@ export function Delivery() {
               {canCopy && (
                 <div className="pad" style={{ marginBottom: 10 }}>
                   <button type="button" className="dashed-btn" onClick={copyLast}>
-                    <Icon name="refresh" size={18} /> למלא כמו בחשבונית הקודמת
+                    <Icon name="refresh" size={18} /> למלא כמו בפעם הקודמת
                   </button>
                 </div>
               )}
@@ -406,10 +413,10 @@ export function Delivery() {
           {existing && (
             <div className="pad inv-actions">
               <Link to={`/returns?invoice=${existing.id}`} className="btn small ghost">
-                <Icon name="undo" size={18} /> החזרות על החשבונית
+                <Icon name="undo" size={18} /> החזרות על הסחורה
               </Link>
               <button type="button" className="danger-link end-link" onClick={remove}>
-                <Icon name="trash" size={18} /> מחיקת החשבונית
+                <Icon name="trash" size={18} /> מחיקת הסחורה
               </button>
             </div>
           )}
@@ -418,11 +425,11 @@ export function Delivery() {
 
       <div className="footer compact">
         <div className="sum">
-          <span>חוב לסוכן על החשבונית</span>
+          <span>שווי הסחורה</span>
           <b>{shekelSmart(owedNow)}</b>
         </div>
         <button type="button" className="btn" onClick={save} disabled={saveDisabled}>
-          {saving ? 'שומר…' : existing ? 'שמירת השינויים' : 'שמירת החשבונית'}
+          {saving ? 'שומר…' : existing ? 'שמירת השינויים' : 'שמירת הסחורה'}
         </button>
       </div>
     </>

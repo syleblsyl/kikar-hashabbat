@@ -10,8 +10,11 @@ import { getSetting, setSetting } from './db/repo';
 import { toast } from './components/Toast';
 import { thisMonth } from './components/MonthBar';
 import { ensureRecurring } from './db/ops';
-import { Invoices } from './screens/Invoices';
-import { Navigate } from 'react-router-dom';
+import { Stock } from './screens/Stock';
+import { AgentInvoices } from './screens/AgentInvoices';
+import { InvoiceForm } from './screens/InvoiceForm';
+import { InvoiceCheck } from './screens/InvoiceCheck';
+import { Navigate, useParams } from 'react-router-dom';
 import { checkForUpdateThrottled, type UpdateInfo } from './lib/updater';
 import { Home } from './screens/Home';
 import { Lock } from './screens/Lock';
@@ -151,9 +154,13 @@ function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps)
                 />
               }
             />
-            <Route path="/invoices" element={<Invoices />} />
-            <Route path="/invoice/:id" element={<Delivery />} />
-            <Route path="/delivery" element={<Navigate to="/invoices" replace />} />
+            <Route path="/stock" element={<Stock />} />
+            <Route path="/stock/:id" element={<Delivery />} />
+            <Route path="/invoices" element={<AgentInvoices />} />
+            <Route path="/invoices/:id" element={<InvoiceForm />} />
+            <Route path="/check/:agent/:month" element={<InvoiceCheck />} />
+            <Route path="/invoice/:id" element={<OldStockLink />} />
+            <Route path="/delivery" element={<Navigate to="/stock" replace />} />
             <Route path="/returns" element={<Returns />} />
             <Route path="/income" element={<Income />} />
             <Route path="/payment" element={<PaymentPick />} />
@@ -308,4 +315,10 @@ export default function App() {
       <ToastHost />
     </>
   );
+}
+
+/** Before 1.0.15 goods lived at /invoice/:id (now /stock/:id). */
+function OldStockLink() {
+  const { id } = useParams();
+  return <Navigate to={`/stock/${id}`} replace />;
 }

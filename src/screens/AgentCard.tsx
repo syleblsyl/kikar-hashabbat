@@ -6,8 +6,10 @@ import { Icon } from '../components/Icon';
 import { matches, SearchBox } from '../components/SearchBox';
 import { toast } from '../components/Toast';
 import { getAgent, productsOfAgent, unhideAgent, type Agent, type Product } from '../db/catalog';
-import { addPayment, agentLedger, balances, deletePayment, type LedgerEntry } from '../db/ops';
-import { DAY_NAMES, DAY_SHORT, fromIso, iso, startOfWeek, today } from '../lib/dates';
+import { addPayment, deletePayment, pendingReturns, type StockRow } from '../db/ops';
+import { agentLedger, agentMonthsWithState, balances, type AgentMonth, type CheckState, type LedgerEntry } from '../db/billing';
+import { CheckPill, checkLabel } from '../components/CheckPill';
+import { DAY_NAMES, DAY_SHORT, dm, fromIso, iso, monthName, startOfWeek, today } from '../lib/dates';
 import { parseAmountStrict, products as productsLabel, shekelCents, shekelSmart } from '../lib/money';
 import { initialOf } from './Agents';
 import { useBack } from '../components/useBack';
@@ -32,7 +34,9 @@ export function AgentCard() {
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [balance, setBalance] = useState(0);
   const [prods, setProds] = useState<Product[]>([]);
-  const [tab, setTab] = useState<'ledger' | 'products'>('ledger');
+  const [tab, setTab] = useState<'ledger' | 'stock' | 'products'>('ledger');
+  const [months, setMonths] = useState<{ m: AgentMonth; state: CheckState; diff: number }[]>([]);
+  const [pendingRet, setPendingRet] = useState<StockRow[]>([]);
   const [payOpen, setPayOpen] = useState(!!params.get('pay'));
   const [date, setDate] = useState(iso(today()));
   const [amount, setAmount] = useState('');
@@ -48,11 +52,13 @@ export function AgentCard() {
 
   async function load() {
     if (!Number.isFinite(agentId) || agentId <= 0) return setAgent(null);
-    const [a, l, b, p] = await Promise.all([getAgent(agentId), agentLedger(agentId), balances(), productsOfAgent(agentId)]);
+    const [a, l, b, p, ms, pr] = await Promise.all([getAgent(agentId), agentLedger(agentId), balances(), productsOfAgent(agentId), agentMonthsWithState(agentId), pendingReturns(false)]);
     setAgent(a);
     setLedger(l);
     setBalance(b.get(agentId) ?? 0);
     setProds(p);
+    setMonths(ms);
+    setPendingRet(pr.filter((r) => r.agent_id === agentId));
   }
 
   useEffect(() => {
@@ -96,7 +102,7 @@ export function AgentCard() {
   async function removePayment(e: LedgerEntry) {
     const ok = await ask({
       title: 'למחוק את התשלום?',
-      text: `${shekelSmart(-e.amount)} מ-${fmtDate(e.date)}${e.sub ? ` (${e.sub})` : ''}.\nהיתרה לסוכן תעלה בהתאם.`,
+      text: `${shekelSmart(-e.amount)} מ-${fmtDate(e.date)}${e.method || e.note ? ` (${[e.method, e.note].filter(Boolean).join(' · ')})` : ''}.\nהיתרה לסוכן תעלה בהתאם.`,
       ok: 'מחיקת התשלום',
       danger: true,
     });
@@ -108,9 +114,10 @@ export function AgentCard() {
   }
 
   function open(e: LedgerEntry) {
-    if (e.kind === 'delivery') nav(`/invoice/${e.id}`);
+    if (e.kind === 'payment') setOpenPayment((k) => (k === e.key ? null : e.key));
+    else if (e.kind === 'goods') nav(`/stock/${e.id}`);
     else if (e.kind === 'returns') nav(`/returns?invoice=${e.id}`);
-    else setOpenPayment((k) => (k === e.key ? null : e.key));
+    else nav(`/check/${agentId}/${e.month}`);
   }
 
   if (agent === undefined) return <header className="bar" />;
@@ -135,9 +142,12 @@ export function AgentCard() {
   const after = balance - (parsed ?? 0);
   const mine = myBalanceWords(balance, agent.name);
   const lastPay = ledger.find((e) => e.kind === 'payment');
-  const pending = ledger.filter((e) => e.pendingReturns);
-  const pendingPast = pending.filter((e) => e.date < iso(startOfWeek(today())));
-  const pendingSum = pending.reduce((s, e) => s + e.amount, 0);
+  const pendingPast = pendingRet.filter((r) => r.date < iso(startOfWeek(today())));
+  // of what I owe: months that still have no invoice, counted by the stock
+  const billed = ledger[0]?.billed ?? 0;
+  const unbilled = Math.round((balance - billed) * 100) / 100;
+  const estMonths = [...new Set(ledger.filter((e) => e.kind === 'goods' || e.kind === 'returns').map((e) => e.month!))].sort();
+  const stateOfMonth = new Map(months.map((x) => [x.m.month, x]));
 
   return (
     <>
@@ -183,7 +193,7 @@ export function AgentCard() {
             </span>
           </div>
         </div>
-        <div className="acts">
+        <div className="acts four">
           {agent.phone ? (
             <a href={`tel:${agent.phone.replace(/[^\d+]/g, '')}`}><Icon name="phone" size={18} /> חיוג</a>
           ) : (
@@ -194,7 +204,8 @@ export function AgentCard() {
           ) : (
             <span />
           )}
-          <Link to={`/invoice/new?agent=${agentId}`}><Icon name="receipt" size={18} /> חשבונית</Link>
+          <Link to={`/stock/new?agent=${agentId}`}><Icon name="truck" size={18} /> סחורה</Link>
+          <Link to={`/invoices/new?agent=${agentId}`}><Icon name="receipt" size={18} /> חשבונית</Link>
         </div>
       </section>
 
@@ -207,16 +218,16 @@ export function AgentCard() {
             {lastPay.method ? ` · ${lastPay.method}` : ''}
           </span>
         )}
-        {pending.length > 0 && balance > 0.004 && (
+        {unbilled > 0.004 && balance > 0.004 && (
           <span className="hint">
-            כולל {shekelSmart(pendingSum)} מאספקות שעוד לא נרשמו להן החזרות – אחרי הרישום היתרה תרד.
+            {unbilled < balance - 0.004 ? `מתוך זה ${shekelSmart(unbilled)}` : 'הכול'} לפי המלאי ({estMonths.slice(-3).map((m) => monthName(m)).join(', ')}) – עוד בלי חשבונית, יתעדכן כשתגיע.
           </span>
         )}
         {pendingPast.map((p) => (
-          <Link key={p.key} to={`/returns?invoice=${p.id}`} className="banner gold slim">
+          <Link key={p.id} to={`/returns?invoice=${p.id}`} className="banner gold slim">
             <span className="ic"><Icon name="undo" size={18} /></span>
             <span className="txt">
-              <b>החזרות · חשבונית מ-{fromIso(p.date).getDate()}.{fromIso(p.date).getMonth() + 1}</b>
+              <b>החזרות · סחורה מ-{dm(p.date)}</b>
               <span>עוד לא נרשמו</span>
             </span>
             <span className="go">לרישום</span>
@@ -261,11 +272,18 @@ export function AgentCard() {
               <span>₪</span>
             </div>
           </div>
-          {balance > 0.004 && (
+          {(balance > 0.004 || billed > 0.004) && (
             <div className="chips">
-              <button type="button" className="chip" onClick={() => setAmount(String(Math.round(balance * 100) / 100))}>
-                כל היתרה · {shekelSmart(balance)}
-              </button>
+              {billed > 0.004 && Math.abs(billed - balance) > 0.004 && (
+                <button type="button" className="chip" onClick={() => setAmount(String(Math.round(billed * 100) / 100))}>
+                  לפי החשבוניות · {shekelSmart(billed)}
+                </button>
+              )}
+              {balance > 0.004 && (
+                <button type="button" className="chip" onClick={() => setAmount(String(Math.round(balance * 100) / 100))}>
+                  כל החוב · {shekelSmart(balance)}
+                </button>
+              )}
             </div>
           )}
           <div className="chips" role="radiogroup" aria-label="אמצעי תשלום">
@@ -295,15 +313,27 @@ export function AgentCard() {
       <div className="stack" style={{ margin: '12px 16px 0' }}>
         <div className="segment" role="tablist">
           <button type="button" role="tab" aria-selected={tab === 'ledger'} className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>תנועות</button>
+          <button type="button" role="tab" aria-selected={tab === 'stock'} className={tab === 'stock' ? 'on' : ''} onClick={() => setTab('stock')}>מלאי</button>
           <button type="button" role="tab" aria-selected={tab === 'products'} className={tab === 'products' ? 'on' : ''} onClick={() => setTab('products')}>מוצרים ({prods.length})</button>
         </div>
       </div>
 
       {tab === 'ledger' ? (
         <section className="card ledger" style={{ margin: '10px 16px 0', padding: '2px 14px' }}>
-          {ledger.length === 0 && <p className="hint" style={{ padding: '14px 0' }}>עוד אין תנועות. אחרי חשבוניות ותשלומים הם יופיעו כאן.</p>}
+          {ledger.length === 0 && <p className="hint" style={{ padding: '14px 0' }}>עוד אין תנועות. אחרי סחורה, חשבוניות ותשלומים הם יופיעו כאן.</p>}
           {ledger.map((e) => {
             const d = fromIso(e.date);
+            const st = e.month ? stateOfMonth.get(e.month) : undefined;
+            const title =
+              e.kind === 'invoice' ? `חשבונית על ${monthName(e.month!)}` : e.kind === 'goods' ? 'סחורה' : e.kind === 'returns' ? 'החזרות' : 'תשלום';
+            const sub =
+              e.kind === 'invoice'
+                ? [e.number ? `מס׳ ${e.number}` : '', st ? checkLabel(st.state, st.diff) : ''].filter(Boolean).join(' · ')
+                : e.kind === 'goods'
+                  ? `${e.manual ? 'סכום בלי פירוט' : productsLabel(e.productCount ?? 0)}${e.pendingReturns ? ' · ממתין להחזרות' : ''}`
+                  : e.kind === 'returns'
+                    ? `על סחורה מ-${dm(e.goodsDate ?? e.date)}`
+                    : [e.method, e.note].filter(Boolean).join(' · ') || 'תשלום';
             const noCredit = e.kind === 'returns' && Math.abs(e.amount) < 0.004;
             return (
               <div key={e.key} className="entry-wrap">
@@ -313,11 +343,11 @@ export function AgentCard() {
                     <b>{d.getDate()}.{d.getMonth() + 1}</b>
                   </span>
                   <span className="what">
-                    <b>{e.title}</b>
-                    <span>
-                      {e.kind === 'payment' ? e.sub || 'תשלום' : e.sub}
-                      {e.pendingReturns ? ' · ממתין להחזרות' : ''}
-                    </span>
+                    <b>
+                      {title}
+                      {(e.kind === 'goods' || e.kind === 'returns') && <small className="muted-tag">לפי מלאי</small>}
+                    </b>
+                    <span className={e.kind === 'invoice' && st?.state === 'mismatch' ? 'bad-txt' : undefined}>{sub}</span>
                   </span>
                   <span className="amt-col">
                     {noCredit ? (
@@ -343,7 +373,31 @@ export function AgentCard() {
               </div>
             );
           })}
-          {ledger.length > 0 && <p className="hint ledger-key">+ סחורה (החוב שלי עולה) · − החזרות ותשלומים (החוב יורד) · מתחת לכל סכום: כמה החוב אחרי התנועה. לחיצה על תשלום – אישור תשלום לשליחה.</p>}
+          {ledger.length > 0 && (
+            <p className="hint ledger-key">
+              + חשבוניות · בחודש שעוד אין לו חשבונית – הסחורה וההחזרות מהמלאי · − תשלומים · מתחת לכל סכום: כמה החוב אחרי. לחיצה על חשבונית – הבדיקה מול המלאי; על תשלום – אישור תשלום.
+            </p>
+          )}
+        </section>
+      ) : tab === 'stock' ? (
+        <section className="card list" style={{ margin: '10px 16px 0', padding: '2px 14px' }}>
+          {months.length === 0 && <div className="empty" style={{ borderTop: 0 }}>עוד לא נרשמו סחורה או חשבוניות.</div>}
+          {months.map(({ m, state, diff }, i) => (
+            <Link key={m.month} to={`/check/${agentId}/${m.month}`} className="row" style={i === 0 ? { borderTop: 0 } : undefined}>
+              <span className="grow">
+                <b>{monthName(m.month, true)}</b>
+                <span>
+                  {m.stockCount > 0 || m.creditCount > 0 ? `מלאי ${shekelSmart(m.expected)}` : 'בלי מלאי'}
+                  {m.invoiceCount > 0 ? ` · חשבונית ${shekelSmart(m.invoiced)}` : ''}
+                  {m.openReturns > 0 ? ' · מחכה להחזרות' : ''}
+                </span>
+              </span>
+              <CheckPill state={state} diff={diff} />
+            </Link>
+          ))}
+          <Link to={`/stock/new?agent=${agentId}`} className="dashed-btn" style={{ margin: '6px 0 10px' }}>
+            <Icon name="plus" size={18} /> קבלת סחורה
+          </Link>
         </section>
       ) : (
         <section className="card" style={{ margin: '10px 16px 0', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>

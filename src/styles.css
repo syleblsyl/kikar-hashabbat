@@ -615,3 +615,40 @@ a.btn { text-decoration: none; }
 .ret-mini { position: absolute; top: 6px; width: 40px; height: 40px; border-radius: 20px; border: 0; background: rgba(255, 255, 255, 0.9); color: var(--ink); display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2); z-index: 1; }
 .ret-mini.edit { right: 6px; }
 .ret-mini.reset { left: 6px; color: var(--red); }
+
+/* 1.0.15 – stock, agents' invoices and the check between them */
+.pill.ok { color: var(--green); background: var(--green-soft); }
+.pill.bad { color: var(--red); background: var(--red-soft); }
+.pill.mute { color: var(--ink2); background: var(--chip); }
+.banner.red { background: var(--red-soft); border-color: #f0cfcb; }
+.banner.red .ic { background: var(--red); color: #fff; }
+.banner.plain { background: var(--surface); border-color: var(--line); }
+.banner.plain .txt b { font-weight: 700; }
+.inv-agents span.bad { background: var(--red-soft); color: var(--red); }
+.inv-agents span.wait { background: var(--gold-soft); color: var(--gold-ink); }
+.inv-agents span.good { background: var(--green-soft); color: var(--green); }
+.cmp { font-size: 16px; font-weight: 800; border-radius: 10px; padding: 8px 12px; }
+.cmp.ok { background: var(--green-soft); color: var(--green); }
+.cmp.bad { background: var(--red-soft); color: var(--red); }
+.cmp.mute { background: var(--chip); color: var(--ink2); font-weight: 700; font-size: 15px; }
+.check-status { margin: 0 0 4px; }
+.check-status b { font-size: 18px; font-weight: 800; }
+.check-status .btn.small { align-self: flex-start; width: auto; padding: 0 16px; }
+.update-box.mute { background: var(--chip); border-color: var(--line); }
+.net-box .strong span { color: var(--ink); font-weight: 800; }
+.net-box .inv-line { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line-soft); color: var(--ink); }
+.net-box .inv-line span { display: flex; gap: 8px; align-items: baseline; }
+.net-box .inv-line small { color: var(--primary); font-weight: 800; font-size: 13px; text-decoration: underline; }
+.net-box .total b.ok { color: var(--green); }
+.net-box .total b.bad { color: var(--red); }
+.sec-h { font-size: 17px; font-weight: 800; margin: 0 2px 2px; }
+.list .sub-head { font-size: 14px; font-weight: 800; color: var(--ink2); padding: 12px 0 4px; border-top: 1px solid var(--line-soft); }
+.bad-txt { color: var(--red) !important; font-weight: 700; }
+.tile .tl { display: flex; flex-direction: column; gap: 1px; }
+.tile .tl small { font-size: 13px; color: var(--ink2); font-weight: 600; }
+.hero .tag { display: inline-block; margin-inline-start: 8px; font-size: 12px; font-weight: 800; color: var(--primary); background: var(--primary-ink); border-radius: 6px; padding: 1px 7px; vertical-align: 2px; }
+.hero .mini small { font-size: 11px; color: var(--primary-ink); }
+.agent-hero .acts.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.agent-hero .acts.four a, .agent-hero .acts.four span { font-size: 14px; gap: 4px; }
+.amt.est { color: var(--gold-ink); }
+.st-row .what small.st-stock { color: #2f5d9a; }

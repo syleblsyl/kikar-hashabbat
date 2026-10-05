@@ -1,9 +1,12 @@
 import { query, run, runSet } from './sqlite';
-import { addDays, fromIso, iso, startOfWeek } from '../lib/dates';
+import { addDays, addMonthKey, fromIso, iso, monthKey, startOfWeek } from '../lib/dates';
 
-/* ======================= invoices (goods from an agent) ======================= */
+export { balances, balanceOf } from './billing';
+
+/* ======================= stock: goods from an agent ("מלאי") ======================= */
 // Stored in the "deliveries" table. Any number per agent; each is either per product (delivery_lines)
-// or one sum (manual_amount). Returns are recorded on the invoice, per product or as one credit sum.
+// or one sum (manual_amount). Returns are recorded on the goods, per product or as one credit sum, and count
+// in the month of their date. The agent's monthly invoice is something else: see billing.ts.
 
 export type Delivery = {
   id: number;
@@ -30,11 +33,11 @@ export type DeliveryItem = {
   qty_received: number;
   qty_returned: number;
   inLine: boolean;
-  /** quantity in this agent's previous invoice (0 if none) */
+  /** quantity in this agent's previous goods (0 if none) */
   prev_qty: number;
 };
 
-export async function getInvoice(id: number): Promise<Delivery | null> {
+export async function getStock(id: number): Promise<Delivery | null> {
   const rows = await query<Delivery>('SELECT * FROM deliveries WHERE id = ?', [id]);
   return rows[0] ?? null;
 }
@@ -43,8 +46,8 @@ export async function getInvoice(id: number): Promise<Delivery | null> {
  * Everything the agent supplies (at today's cost) plus anything already in this invoice
  * (at the cost that was saved then — later price changes never rewrite old invoices).
  */
-export async function invoiceItems(agentId: number, invoiceId: number | null): Promise<DeliveryItem[]> {
-  const inv = invoiceId ? await getInvoice(invoiceId) : null;
+export async function stockItems(agentId: number, invoiceId: number | null): Promise<DeliveryItem[]> {
+  const inv = invoiceId ? await getStock(invoiceId) : null;
   const lines = inv
     ? await query<{ product_id: number; unit_cost: number; returnable: number; qty_received: number; qty_returned: number }>(
         'SELECT product_id, unit_cost, returnable, qty_received, qty_returned FROM delivery_lines WHERE delivery_id = ?',
@@ -95,8 +98,8 @@ export async function invoiceItems(agentId: number, invoiceId: number | null): P
   return items.map(({ sort: _s, ...rest }) => rest);
 }
 
-/** Saves an invoice per product. Lines at 0 are removed; an invoice left empty is removed. Returns its id (0 if removed). */
-export async function saveInvoiceItems(invoiceId: number | null, agentId: number, date: string, items: DeliveryItem[]): Promise<number> {
+/** Saves goods per product. Lines at 0 are removed; an invoice left empty is removed. Returns its id (0 if removed). */
+export async function saveStockItems(invoiceId: number | null, agentId: number, date: string, items: DeliveryItem[]): Promise<number> {
   const withQty = items.filter((i) => i.qty_received > 0);
   let id = invoiceId ?? 0;
   if (!id) {
@@ -107,8 +110,10 @@ export async function saveInvoiceItems(invoiceId: number | null, agentId: number
   const set: { statement: string; values?: unknown[] }[] = [
     // per product from now on (a sum entered before is replaced, and so is a credit sum)
     {
-      statement: 'UPDATE deliveries SET agent_id = ?, delivery_date = ?, week_start = ?, manual_amount = NULL, manual_credit = NULL WHERE id = ?',
-      values: [agentId, date, iso(startOfWeek(fromIso(date))), id],
+      statement: `UPDATE deliveries SET agent_id = ?, delivery_date = ?, week_start = ?,
+                    manual_credit = CASE WHEN manual_amount IS NOT NULL THEN NULL ELSE manual_credit END, manual_amount = NULL,
+                    returns_date = CASE WHEN returns_date IS NOT NULL AND returns_date < ? THEN ? ELSE returns_date END WHERE id = ?`,
+      values: [agentId, date, iso(startOfWeek(fromIso(date))), date, date, id],
     },
   ];
   for (const i of items) {
@@ -132,8 +137,8 @@ export async function saveInvoiceItems(invoiceId: number | null, agentId: number
   return withQty.length === 0 ? 0 : id;
 }
 
-/** Saves an invoice as one sum (what I owe the agent for it), without products. Returns its id. */
-export async function saveInvoiceAmount(
+/** Saves goods as one sum (what they are worth), without products. Returns its id. */
+export async function saveStockAmount(
   invoiceId: number | null,
   agentId: number,
   date: string,
@@ -142,7 +147,7 @@ export async function saveInvoiceAmount(
   returnable: boolean,
 ): Promise<number> {
   const week = iso(startOfWeek(fromIso(date)));
-  const inv = invoiceId ? await getInvoice(invoiceId) : null;
+  const inv = invoiceId ? await getStock(invoiceId) : null;
   if (!inv) {
     const res = await run(
       'INSERT INTO deliveries (agent_id, week_start, delivery_date, manual_amount, manual_returnable, note, returns_done) VALUES (?, ?, ?, ?, ?, ?, 0)',
@@ -157,25 +162,21 @@ export async function saveInvoiceAmount(
     { statement: 'DELETE FROM delivery_lines WHERE delivery_id = ?', values: [inv.id] },
     {
       statement:
-        'UPDATE deliveries SET agent_id = ?, delivery_date = ?, week_start = ?, manual_amount = ?, manual_returnable = ?, note = ?, manual_credit = ? WHERE id = ?',
-      values: [agentId, date, week, amount, returnable ? 1 : 0, note.trim() || null, credit, inv.id],
+        `UPDATE deliveries SET agent_id = ?, delivery_date = ?, week_start = ?, manual_amount = ?, manual_returnable = ?, note = ?, manual_credit = ?,
+           returns_date = CASE WHEN returns_date IS NOT NULL AND returns_date < ? THEN ? ELSE returns_date END WHERE id = ?`,
+      values: [agentId, date, week, amount, returnable ? 1 : 0, note.trim() || null, credit, date, date, inv.id],
     },
   ]);
   return inv.id;
 }
 
-/** How this agent's previous invoice was recorded, to open a new one the same way. */
-export async function lastInvoiceOf(agentId: number, exceptId = 0): Promise<{ manual: boolean; received: number; returnable: boolean } | null> {
+/** How this agent's previous goods were recorded, to open new ones the same way. */
+export async function lastStockOf(agentId: number, exceptId = 0): Promise<{ manual: boolean; received: number; returnable: boolean } | null> {
   const [r] = await query<{ manual_amount: number | null; received: number; manual_returnable: number }>(
     'SELECT manual_amount, received, manual_returnable FROM delivery_totals WHERE agent_id = ? AND id <> ? ORDER BY delivery_date DESC, id DESC LIMIT 1',
     [agentId, exceptId],
   );
   return r ? { manual: r.manual_amount != null, received: Number(r.received), returnable: !!Number(r.manual_returnable) } : null;
-}
-
-/** What I owe one agent right now (negative = the agent owes me). */
-export async function balanceOf(agentId: number): Promise<number> {
-  return (await balances()).get(agentId) ?? 0;
 }
 
 export async function deleteDelivery(id: number) {
@@ -185,7 +186,7 @@ export async function deleteDelivery(id: number) {
   ]);
 }
 
-export type InvoiceRow = {
+export type StockRow = {
   id: number;
   agent_id: number;
   agent: string;
@@ -200,11 +201,11 @@ export type InvoiceRow = {
   returnable: boolean;
 };
 
-const INVOICE_ROW_SQL = `SELECT t.id, t.agent_id, a.name AS agent, a.color, t.delivery_date AS date, t.received, t.credit, t.lines,
+const STOCK_ROW_SQL = `SELECT t.id, t.agent_id, a.name AS agent, a.color, t.delivery_date AS date, t.received, t.credit, t.lines,
         t.manual_amount, t.note, t.returns_done, t.returnable_lines
    FROM delivery_totals t JOIN agents a ON a.id = t.agent_id`;
 
-type InvoiceSqlRow = {
+type StockSqlRow = {
   id: number;
   agent_id: number;
   agent: string;
@@ -219,7 +220,7 @@ type InvoiceSqlRow = {
   returnable_lines: number;
 };
 
-const toInvoiceRow = (r: InvoiceSqlRow): InvoiceRow => ({
+const toStockRow = (r: StockSqlRow): StockRow => ({
   id: r.id,
   agent_id: r.agent_id,
   agent: r.agent,
@@ -234,9 +235,9 @@ const toInvoiceRow = (r: InvoiceSqlRow): InvoiceRow => ({
   returnable: Number(r.returnable_lines) > 0,
 });
 
-export async function invoicesBetween(from: string, to: string): Promise<InvoiceRow[]> {
-  const rows = await query<InvoiceSqlRow>(`${INVOICE_ROW_SQL} WHERE t.delivery_date BETWEEN ? AND ? ORDER BY t.delivery_date DESC, t.id DESC`, [from, to]);
-  return rows.map(toInvoiceRow);
+export async function stockBetween(from: string, to: string): Promise<StockRow[]> {
+  const rows = await query<StockSqlRow>(`${STOCK_ROW_SQL} WHERE t.delivery_date BETWEEN ? AND ? ORDER BY t.delivery_date DESC, t.id DESC`, [from, to]);
+  return rows.map(toStockRow);
 }
 
 /* ======================= returns ======================= */
@@ -261,7 +262,7 @@ export type ReturnsAgent = {
   note: string | null;
 };
 
-export async function returnsForInvoice(id: number): Promise<ReturnsAgent | null> {
+export async function returnsFor(id: number): Promise<ReturnsAgent | null> {
   const [d] = await query<{
     id: number;
     agent_id: number;
@@ -283,7 +284,7 @@ export async function returnsForInvoice(id: number): Promise<ReturnsAgent | null
     [id],
   );
   if (!d) return null;
-  const items = d.manual_amount != null ? [] : (await invoiceItems(d.agent_id, d.id)).filter((i) => i.inLine);
+  const items = d.manual_amount != null ? [] : (await stockItems(d.agent_id, d.id)).filter((i) => i.inLine);
   return {
     delivery_id: d.id,
     agent_id: d.agent_id,
@@ -321,18 +322,18 @@ export async function saveReturnsAmount(deliveryId: number, returnsDate: string,
 }
 
 /**
- * Invoices still waiting for returns, oldest first. Agents collect on Sunday, so an invoice is due
+ * Goods still waiting for returns, oldest first. Agents collect on Sunday, so an invoice is due
  * from the Sunday after it (`dueOnly`); otherwise every open one is listed.
  */
-export async function pendingReturnInvoices(dueOnly = true): Promise<InvoiceRow[]> {
+export async function pendingReturns(dueOnly = true): Promise<StockRow[]> {
   const before = dueOnly ? iso(startOfWeek(new Date())) : '9999-12-31';
-  const rows = await query<InvoiceSqlRow>(
-    `${INVOICE_ROW_SQL}
+  const rows = await query<StockSqlRow>(
+    `${STOCK_ROW_SQL}
       WHERE t.returns_done = 0 AND t.returnable_lines > 0 AND t.received > 0 AND t.delivery_date < ?
       ORDER BY t.delivery_date, a.name`,
     [before],
   );
-  return rows.map(toInvoiceRow);
+  return rows.map(toStockRow);
 }
 
 /* ======================= payment methods & income ======================= */
@@ -468,15 +469,9 @@ export async function deleteExpense(id: number) {
 
 export type Recurring = { id: number; type_id: number | null; type: string | null; amount: number; note: string | null; start_month: string; end_month: string | null };
 
-export const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-const nextMonth = (m: string) => {
-  const [y, mo] = m.split('-').map(Number);
-  return monthKey(new Date(y, mo, 1));
-};
-const prevMonth = (m: string) => {
-  const [y, mo] = m.split('-').map(Number);
-  return monthKey(new Date(y, mo - 2, 1));
-};
+export { monthKey };
+const nextMonth = (m: string) => addMonthKey(m, 1);
+const prevMonth = (m: string) => addMonthKey(m, -1);
 
 export async function listRecurring(): Promise<Recurring[]> {
   const rows = await query<Recurring>(
@@ -535,7 +530,8 @@ export async function stopRecurring(id: number, fromMonth: string) {
   ]);
 }
 
-/* ======================= agent payments, ledger, balance ======================= */
+/* ======================= agent payments ======================= */
+// Balances, the money ledger, statements and payment confirmations are in billing.ts.
 
 /** Records a payment to the agent and returns its id (for the payment confirmation). */
 export async function addPayment(agentId: number, date: string, amount: number, method: string, note: string): Promise<number> {
@@ -545,240 +541,6 @@ export async function addPayment(agentId: number, date: string, amount: number, 
 
 export async function deletePayment(id: number) {
   await run('DELETE FROM agent_payments WHERE id = ?', [id]);
-}
-
-export type LedgerEntry = {
-  key: string;
-  kind: 'delivery' | 'returns' | 'payment';
-  id: number;
-  date: string;
-  amount: number;
-  title: string;
-  sub: string;
-  pendingReturns?: boolean;
-  weekStart?: string;
-  /** what I owe the agent right after this entry (negative = the agent owes me) */
-  balance: number;
-  /** delivery / returns recorded as one sum (no products) */
-  manual?: boolean;
-  /** payments only */
-  method?: string | null;
-  note?: string | null;
-};
-
-export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
-  const ds = await query<{
-    id: number;
-    week_start: string;
-    delivery_date: string;
-    returns_done: number;
-    returns_date: string | null;
-    received: number;
-    credit: number;
-    lines: number;
-    returnable: number;
-    manual_amount: number | null;
-    manual_credit: number | null;
-    note: string | null;
-  }>(
-    `SELECT id, week_start, delivery_date, returns_done, returns_date, received, credit, lines,
-            returnable_lines AS returnable, manual_amount, manual_credit, note
-       FROM delivery_totals WHERE agent_id = ?`,
-    [agentId],
-  );
-  const pays = await query<{ id: number; date: string; amount: number; method: string | null; note: string | null }>(
-    'SELECT id, date, amount, method, note FROM agent_payments WHERE agent_id = ?',
-    [agentId],
-  );
-  const out: LedgerEntry[] = [];
-  for (const d of ds) {
-    const dd = fromIso(d.delivery_date);
-    const from = `${dd.getDate()}.${dd.getMonth() + 1}`;
-    out.push({
-      key: `d${d.id}`,
-      kind: 'delivery',
-      id: d.id,
-      date: d.delivery_date,
-      amount: Number(d.received),
-      title: 'חשבונית',
-      sub:
-        d.manual_amount != null
-          ? `לפי סכום${d.note ? ` · ${d.note}` : ''}`
-          : `${Number(d.lines) === 1 ? 'מוצר אחד' : `${d.lines} מוצרים`}${d.note ? ` · ${d.note}` : ''}`,
-      manual: d.manual_amount != null,
-      note: d.note,
-      pendingReturns: !d.returns_done && Number(d.returnable) > 0,
-      weekStart: d.week_start,
-      balance: 0,
-    });
-    if (d.returns_done) {
-      out.push({
-        key: `r${d.id}`,
-        kind: 'returns',
-        id: d.id,
-        date: d.returns_date ?? d.delivery_date,
-        amount: -Number(d.credit),
-        title: 'החזרות',
-        sub: `על חשבונית מ-${from}${d.manual_credit != null ? ' · זיכוי לפי סכום' : ''}`,
-        manual: d.manual_credit != null,
-        weekStart: d.week_start,
-        balance: 0,
-      });
-    }
-  }
-  for (const p of pays) {
-    out.push({
-      key: `p${p.id}`,
-      kind: 'payment',
-      id: p.id,
-      date: p.date,
-      amount: -Number(p.amount),
-      title: 'תשלום',
-      sub: [p.method, p.note].filter(Boolean).join(' · '),
-      balance: 0,
-      method: p.method,
-      note: p.note,
-    });
-  }
-  // oldest first to run the balance: on the same day goods arrive, then returns, then the payment
-  const order = { delivery: 0, returns: 1, payment: 2 };
-  out.sort((a, b) => (a.date === b.date ? order[a.kind] - order[b.kind] || a.id - b.id : a.date < b.date ? -1 : 1));
-  let bal = 0;
-  for (const e of out) {
-    bal += e.amount;
-    e.balance = Math.round(bal * 100) / 100;
-  }
-  return out.reverse();
-}
-
-/* ======================= statement & payment confirmation (sent to the agent) ======================= */
-
-export type DocLine = { name: string; qty: number; unit_cost: number };
-export type StatementRow = LedgerEntry & { lines: DocLine[] };
-export type StatementRange = 'since-payment' | 'month' | '3months' | 'all';
-export type Statement = {
-  range: StatementRange;
-  /** first day shown, null = from the beginning */
-  from: string | null;
-  opening: number;
-  rows: StatementRow[];
-  closing: number;
-  delivered: number;
-  credit: number;
-  paid: number;
-  /** dates of invoices whose returns are not recorded yet (the balance will still go down) */
-  pendingWeeks: string[];
-  lastPayment: { date: string; amount: number } | null;
-};
-
-async function linesOf(deliveryIds: number[]): Promise<Map<number, { name: string; qty_received: number; qty_returned: number; unit_cost: number }[]>> {
-  const map = new Map<number, { name: string; qty_received: number; qty_returned: number; unit_cost: number }[]>();
-  if (deliveryIds.length === 0) return map;
-  const rows = await query<{ delivery_id: number; name: string; qty_received: number; qty_returned: number; unit_cost: number }>(
-    `SELECT l.delivery_id, p.name, l.qty_received, l.qty_returned, l.unit_cost
-       FROM delivery_lines l JOIN products p ON p.id = l.product_id
-      WHERE l.delivery_id IN (${deliveryIds.map(() => '?').join(',')})
-      ORDER BY p.name`,
-    deliveryIds,
-  );
-  for (const r of rows) {
-    const list = map.get(r.delivery_id) ?? [];
-    list.push({ name: r.name, qty_received: Number(r.qty_received), qty_returned: Number(r.qty_returned), unit_cost: Number(r.unit_cost) });
-    map.set(r.delivery_id, list);
-  }
-  return map;
-}
-
-/** Account statement for one agent, oldest first, from the chosen point until today. */
-export async function agentStatement(agentId: number, range: StatementRange): Promise<Statement> {
-  const all = (await agentLedger(agentId)).reverse(); // oldest first
-  const lastPayIdx = all.map((e) => e.kind).lastIndexOf('payment');
-  const t = new Date();
-  let start = 0;
-  let from: string | null = null;
-  if (range === 'since-payment' && lastPayIdx >= 0) {
-    start = lastPayIdx + 1;
-    from = all[lastPayIdx].date;
-  } else if (range === 'month' || range === '3months') {
-    from = iso(new Date(t.getFullYear(), t.getMonth() - (range === 'month' ? 0 : 2), 1));
-    start = all.findIndex((e) => e.date >= from!);
-    if (start < 0) start = all.length;
-  }
-  const shown = all.slice(start);
-  const opening = start > 0 ? all[start - 1].balance : 0;
-  const closing = all.length ? all[all.length - 1].balance : 0;
-  const lines = await linesOf([...new Set(shown.filter((e) => e.kind !== 'payment').map((e) => e.id))]);
-  const rows: StatementRow[] = shown.map((e) => {
-    const ls = e.kind === 'payment' ? [] : lines.get(e.id) ?? [];
-    return {
-      ...e,
-      lines:
-        e.kind === 'delivery'
-          ? ls.filter((l) => l.qty_received > 0).map((l) => ({ name: l.name, qty: l.qty_received, unit_cost: l.unit_cost }))
-          : e.kind === 'returns' && !e.manual
-            ? ls.filter((l) => l.qty_returned > 0).map((l) => ({ name: l.name, qty: l.qty_returned, unit_cost: l.unit_cost }))
-            : [],
-    };
-  });
-  const sum = (k: LedgerEntry['kind']) => shown.filter((e) => e.kind === k).reduce((s, e) => s + Math.abs(e.amount), 0);
-  const last = lastPayIdx >= 0 ? all[lastPayIdx] : null;
-  return {
-    range,
-    from,
-    opening,
-    rows,
-    closing,
-    delivered: sum('delivery'),
-    credit: sum('returns'),
-    paid: sum('payment'),
-    pendingWeeks: all.filter((e) => e.pendingReturns).map((e) => e.date),
-    lastPayment: last ? { date: last.date, amount: -last.amount } : null,
-  };
-}
-
-export type PaymentConfirmation = {
-  id: number;
-  agentId: number;
-  date: string;
-  amount: number;
-  method: string | null;
-  note: string | null;
-  /** what I owed the agent just before / just after this payment (negative = the agent owes me) */
-  before: number;
-  after: number;
-  /** what I owe the agent today, after everything recorded since */
-  now: number;
-  pendingWeeks: string[];
-};
-
-export async function paymentConfirmation(paymentId: number): Promise<PaymentConfirmation | null> {
-  const [p] = await query<{ agent_id: number }>('SELECT agent_id FROM agent_payments WHERE id = ?', [paymentId]);
-  if (!p) return null;
-  const ledger = await agentLedger(Number(p.agent_id));
-  const e = ledger.find((x) => x.kind === 'payment' && x.id === paymentId);
-  if (!e) return null;
-  return {
-    id: paymentId,
-    agentId: Number(p.agent_id),
-    date: e.date,
-    amount: -e.amount,
-    method: e.method ?? null,
-    note: e.note ?? null,
-    before: Math.round((e.balance - e.amount) * 100) / 100,
-    after: e.balance,
-    now: ledger[0]?.balance ?? 0,
-    pendingWeeks: ledger.filter((x) => x.pendingReturns && x.date <= e.date).map((x) => x.date),
-  };
-}
-
-export async function balances(): Promise<Map<number, number>> {
-  const rows = await query<{ agent_id: number; bal: number }>(
-    `SELECT a.id AS agent_id,
-            COALESCE((SELECT SUM(t.received - t.credit) FROM delivery_totals t WHERE t.agent_id = a.id), 0)
-          - COALESCE((SELECT SUM(p.amount) FROM agent_payments p WHERE p.agent_id = a.id), 0) AS bal
-       FROM agents a`,
-  );
-  return new Map(rows.map((r) => [r.agent_id, Number(r.bal)]));
 }
 
 /* ======================= helpers for screens ======================= */
