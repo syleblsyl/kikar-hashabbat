@@ -1,5 +1,6 @@
 import { query, run } from './sqlite';
 import { balances, monthAgents, type CheckState } from './billing';
+import { incomeBySource, type SourceTotal } from './ops';
 import { iso, monthKey } from '../lib/dates';
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -31,6 +32,8 @@ export function monthRange(year: number, month: number): { from: string; to: str
 
 export type MonthSummary = {
   income: number;
+  /** income per source (the store, the mikveh) */
+  bySource: SourceTotal[];
   /** what the month's goods cost: each agent's invoice for the month, or its stock while there is no invoice */
   goodsCost: number;
   /** of goodsCost: by invoices / still by stock */
@@ -56,6 +59,7 @@ export async function monthSummary(year: number, month: number): Promise<MonthSu
   const { from, to } = monthRange(year, month);
   const mk = monthKey(new Date(year, month, 1));
   const [inc] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM daily_income WHERE date BETWEEN ? AND ?', [from, to]);
+  const bySource = await incomeBySource(from, to);
   const rows = await monthAgents(mk);
   const [pay] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM agent_payments WHERE date BETWEEN ? AND ?', [from, to]);
   const [exp] = await query<{ total: number; fixed: number; workers: number }>(
@@ -73,6 +77,7 @@ export async function monthSummary(year: number, month: number): Promise<MonthSu
   const expenses = Number(exp?.total ?? 0);
   return {
     income,
+    bySource,
     goodsCost,
     byInvoice,
     byStock,

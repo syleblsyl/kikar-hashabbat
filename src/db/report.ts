@@ -1,6 +1,7 @@
 import { type NetMode } from './repo';
 import { monthAgents, loadInvoices, type CheckState } from './billing';
 import { query } from './sqlite';
+import { incomeBySource, type SourceTotal } from './ops';
 import { addDays, fromIso, iso, monthKey, startOfWeek } from '../lib/dates';
 import { hebMonthsOf, weekInfo } from '../lib/hebrew';
 
@@ -30,7 +31,10 @@ export type MonthReport = {
   to: string;
   hebMonths: string;
   income: number;
+  /** per income column (method, or source – method) */
   byMethod: { name: string; total: number }[];
+  /** per source (store / mikveh), with its methods */
+  bySource: SourceTotal[];
   /** stock: goods that arrived this month, and return credits dated this month */
   received: number;
   credit: number;
@@ -74,25 +78,34 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
   const to = iso(new Date(year, month + 1, 0));
   const mk = monthKey(new Date(year, month, 1));
 
-  const incomeRows = await query<{ date: string; name: string; amount: number }>(
-    `SELECT i.date, m.name, i.amount FROM daily_income i JOIN payment_methods m ON m.id = i.method_id
-      WHERE i.date BETWEEN ? AND ? ORDER BY i.date, m.sort, m.id`,
+  // income: one column per source and method ("מקווה ויזניץ – מזומן"); just the method while only one source is used
+  const incomeRows = await query<{ date: string; source: string; ssort: number; sid: number; method: string; msort: number; mid: number; amount: number }>(
+    `SELECT i.date, s.name AS source, s.sort AS ssort, s.id AS sid, m.name AS method, m.sort AS msort, m.id AS mid, i.amount
+       FROM daily_income i JOIN payment_methods m ON m.id = i.method_id JOIN income_sources s ON s.id = i.source_id
+      WHERE i.date BETWEEN ? AND ? ORDER BY i.date, s.sort, s.id, m.sort, m.id`,
     [from, to],
   );
-  const methodOrder = await query<{ name: string }>('SELECT name FROM payment_methods ORDER BY sort, id');
-  const usedMethods = new Set(incomeRows.map((r) => r.name));
-  const methods = methodOrder.map((m) => m.name).filter((n) => usedMethods.has(n));
+  const manySources = new Set(incomeRows.map((r) => r.sid)).size > 1;
+  const colOf = (r: (typeof incomeRows)[number]) => (manySources ? `${r.source} – ${r.method}` : r.method);
+  const columns = [...new Map(
+    [...incomeRows]
+      .sort((a, b) => a.ssort - b.ssort || a.sid - b.sid || a.msort - b.msort || a.mid - b.mid)
+      .map((r) => [colOf(r), true] as const),
+  ).keys()];
+  const methods = columns;
 
   const byMethodMap = new Map<string, number>();
   const dailyMap = new Map<string, Record<string, number>>();
   for (const r of incomeRows) {
-    byMethodMap.set(r.name, (byMethodMap.get(r.name) ?? 0) + num(r.amount));
+    const col = colOf(r);
+    byMethodMap.set(col, (byMethodMap.get(col) ?? 0) + num(r.amount));
     const d = dailyMap.get(r.date) ?? {};
-    d[r.name] = (d[r.name] ?? 0) + num(r.amount);
+    d[col] = (d[col] ?? 0) + num(r.amount);
     dailyMap.set(r.date, d);
   }
   const income = [...byMethodMap.values()].reduce((a, b) => a + b, 0);
   const daily = [...dailyMap.entries()].map(([date, amounts]) => ({ date, amounts, total: Object.values(amounts).reduce((a, b) => a + b, 0) }));
+  const bySource = (await incomeBySource(from, to)).filter((x) => Math.abs(x.total) > 0.004);
 
   const lines = await query<{ date: string; week_start: string; product_id: number; agent: string; product: string; qty_received: number; qty_returned: number; unit_cost: number; returnable: number; returns_done: number }>(
     `SELECT d.delivery_date AS date, d.week_start, p.id AS product_id, a.name AS agent, p.name AS product,
@@ -219,6 +232,7 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
     hebMonths: hebMonthsOf(year, month),
     income,
     byMethod: methods.map((name) => ({ name, total: byMethodMap.get(name) ?? 0 })),
+    bySource,
     received,
     credit,
     expected: Math.round((received - credit) * 100) / 100,

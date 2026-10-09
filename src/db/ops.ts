@@ -357,6 +357,17 @@ export async function setMethodActive(id: number, active: boolean) {
   await run('UPDATE payment_methods SET active = ? WHERE id = ?', [active ? 1 : 0, id]);
 }
 
+/* ---------- where the money comes in: the store and the mikveh ---------- */
+
+export type Source = { id: number; name: string; sort: number; active: number };
+
+export async function listSources(): Promise<Source[]> {
+  return query<Source>('SELECT * FROM income_sources WHERE active = 1 ORDER BY sort, id');
+}
+
+/** "source|method" → amount */
+export const incomeKey = (sourceId: number, methodId: number) => `${sourceId}|${methodId}`;
+
 /** Payment methods to show for a day: the active ones, plus hidden ones that already have an amount that day. */
 export async function methodsForDay(date: string): Promise<Method[]> {
   return query<Method>(
@@ -367,22 +378,23 @@ export async function methodsForDay(date: string): Promise<Method[]> {
   );
 }
 
-export async function incomeForDay(date: string): Promise<Map<number, number>> {
-  const rows = await query<{ method_id: number; amount: number }>('SELECT method_id, amount FROM daily_income WHERE date = ?', [date]);
-  return new Map(rows.map((r) => [r.method_id, Number(r.amount)]));
+/** The day's amounts by "source|method". */
+export async function incomeForDay(date: string): Promise<Map<string, number>> {
+  const rows = await query<{ source_id: number; method_id: number; amount: number }>('SELECT source_id, method_id, amount FROM daily_income WHERE date = ?', [date]);
+  return new Map(rows.map((r) => [incomeKey(Number(r.source_id), Number(r.method_id)), Number(r.amount)]));
 }
 
-export async function saveIncomeDay(date: string, amounts: Map<number, number>) {
+export async function saveIncomeDay(date: string, amounts: { sourceId: number; methodId: number; amount: number }[]) {
   const set: { statement: string; values?: unknown[] }[] = [];
-  for (const [methodId, amount] of amounts) {
+  for (const { sourceId, methodId, amount } of amounts) {
     if (amount > 0) {
       set.push({
-        statement: `INSERT INTO daily_income (date, method_id, amount) VALUES (?, ?, ?)
-                    ON CONFLICT(date, method_id) DO UPDATE SET amount = excluded.amount`,
-        values: [date, methodId, amount],
+        statement: `INSERT INTO daily_income (date, source_id, method_id, amount) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(date, source_id, method_id) DO UPDATE SET amount = excluded.amount`,
+        values: [date, sourceId, methodId, amount],
       });
     } else {
-      set.push({ statement: 'DELETE FROM daily_income WHERE date = ? AND method_id = ?', values: [date, methodId] });
+      set.push({ statement: 'DELETE FROM daily_income WHERE date = ? AND source_id = ? AND method_id = ?', values: [date, sourceId, methodId] });
     }
   }
   await runSet(set);
@@ -396,14 +408,29 @@ export async function incomeByDay(from: string, to: string): Promise<Map<string,
   return new Map(rows.map((r) => [r.date, Number(r.total)]));
 }
 
-export async function incomeByMethod(from: string, to: string): Promise<{ id: number; name: string; total: number }[]> {
-  const rows = await query<{ id: number; name: string; total: number }>(
-    `SELECT m.id, m.name, COALESCE(SUM(i.amount), 0) AS total
-       FROM payment_methods m LEFT JOIN daily_income i ON i.method_id = m.id AND i.date BETWEEN ? AND ?
-      GROUP BY m.id HAVING m.active = 1 OR total > 0 ORDER BY m.sort, m.id`,
-    [from, to],
-  );
-  return rows.map((r) => ({ ...r, total: Number(r.total) }));
+/** Income of a period per source (store / mikveh), with the methods inside each. */
+export type SourceTotal = { id: number; name: string; total: number; methods: { name: string; total: number }[] };
+export async function incomeBySource(from: string, to: string): Promise<SourceTotal[]> {
+  const [sources, rows] = await Promise.all([
+    query<Source>('SELECT * FROM income_sources ORDER BY sort, id'),
+    query<{ source_id: number; method: string; msort: number; mid: number; total: number }>(
+      `SELECT i.source_id, m.name AS method, m.sort AS msort, m.id AS mid, SUM(i.amount) AS total
+         FROM daily_income i JOIN payment_methods m ON m.id = i.method_id
+        WHERE i.date BETWEEN ? AND ? GROUP BY i.source_id, m.id ORDER BY m.sort, m.id`,
+      [from, to],
+    ),
+  ]);
+  return sources
+    .map((s) => {
+      const mine = rows.filter((r) => Number(r.source_id) === Number(s.id));
+      return {
+        id: Number(s.id),
+        name: s.name,
+        total: mine.reduce((t, r) => t + Number(r.total), 0),
+        methods: mine.map((r) => ({ name: r.method, total: Number(r.total) })),
+      };
+    })
+    .filter((s) => s.total !== 0 || sources.find((x) => x.id === s.id)?.active);
 }
 
 /* ======================= expenses ======================= */

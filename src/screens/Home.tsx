@@ -155,6 +155,11 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
             <b>{sum ? shekel(sum.expenses) : '…'}</b>
           </Link>
         </div>
+        {sum && sum.bySource.filter((s) => Math.abs(s.total) > 0.004).length > 1 && (
+          <div className="note" style={{ marginTop: -6 }}>
+            מתוך ההכנסות: {sum.bySource.map((s) => `${s.name} ${shekel(s.total)}`).join(' · ')}
+          </div>
+        )}
         {sum && sum.expenses > 0 && (
           <div className="note" style={{ marginTop: -6 }}>
             מתוך ההוצאות: קבועות {shekel(sum.fixed)} · פועלים {shekel(sum.workers)}
@@ -208,7 +213,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
           <span className="ic"><Icon name="upload" /></span>
           <span className="txt">
             <b>הגיע הזמן לגיבוי</b>
-            <span>שמירת קובץ גיבוי ל-Drive או לוואטסאפ</span>
+            <span>שמירת קובץ גיבוי בהורדות של הטלפון</span>
           </span>
           <span className="go">לגיבוי</span>
         </Link>

@@ -254,4 +254,36 @@ export const MIGRATIONS: string[] = [
   DROP TABLE _v4_conv;
   DROP TABLE _v4_before;
   `,
+
+  // v5 — daily income per source: the store and the mikveh, each with its own cash / card amounts.
+  // daily_income has no children, so it is rebuilt directly; the guard fails the step if a row went missing.
+  // "אחר" is hidden when it was never used (the income screen shows cash and card only).
+  `
+  CREATE TABLE income_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    sort INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
+  );
+  INSERT INTO income_sources (id, name, sort) VALUES (1, 'חנות כיכר השבת', 1), (2, 'מקווה ויזניץ', 2);
+  CREATE TEMP TABLE _v5_count AS SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total FROM daily_income;
+  CREATE TABLE daily_income_v5 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    source_id INTEGER NOT NULL DEFAULT 1 REFERENCES income_sources(id),
+    method_id INTEGER NOT NULL REFERENCES payment_methods(id),
+    amount REAL NOT NULL DEFAULT 0,
+    UNIQUE (date, source_id, method_id)
+  );
+  INSERT INTO daily_income_v5 (id, date, source_id, method_id, amount) SELECT id, date, 1, method_id, amount FROM daily_income;
+  DROP TABLE daily_income;
+  ALTER TABLE daily_income_v5 RENAME TO daily_income;
+  CREATE INDEX IF NOT EXISTS idx_income_date ON daily_income (date);
+  CREATE TEMP TABLE _v5_guard (ok INTEGER CHECK (ok = 1));
+  INSERT INTO _v5_guard SELECT (SELECT COUNT(*) FROM daily_income) = (SELECT n FROM _v5_count)
+     AND abs((SELECT COALESCE(SUM(amount), 0) FROM daily_income) - (SELECT total FROM _v5_count)) < 0.005;
+  DROP TABLE _v5_guard;
+  DROP TABLE _v5_count;
+  UPDATE payment_methods SET active = 0 WHERE name = 'אחר' AND id NOT IN (SELECT method_id FROM daily_income);
+  `,
 ];

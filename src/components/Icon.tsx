@@ -37,6 +37,8 @@ const PATHS: Record<string, string[]> = {
   card: ['M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z', 'M2 10h20'],
   dots: ['M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z', 'M8 12h.01', 'M12 12h.01', 'M16 12h.01'],
   info: ['M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z', 'M12 16v-4', 'M12 8h.01'],
+  store: ['M3 9l1.5-5h15L21 9', 'M3 9h18v1.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z', 'M5 13.5V21h14v-7.5', 'M10 21v-5h4v5'],
+  drop: ['M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z'],
 };
 
 type Props = { name: keyof typeof PATHS | string; size?: number; stroke?: number };

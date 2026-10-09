@@ -14,6 +14,7 @@ const TABLES = [
   'agent_products',
   'price_history',
   'payment_methods',
+  'income_sources',
   'expense_types',
   'recurring_expenses',
   'deliveries',
@@ -22,6 +23,10 @@ const TABLES = [
   'expenses',
   'agent_payments',
   'settings',
+];
+const DEFAULT_SOURCES = [
+  { id: 1, name: 'חנות כיכר השבת', sort: 1, active: 1 },
+  { id: 2, name: 'מקווה ויזניץ', sort: 2, active: 1 },
 ];
 // belong to this phone, not to the store's data
 const PRIVATE_SETTINGS = ['pin_hash', 'pin_salt', 'lock_on', 'pin_fails', 'pin_wait_until'];
@@ -105,7 +110,9 @@ export function parseBackup(text: string): Backup {
 /** Replaces all data with the backup's (the PIN stays as it is on this phone). */
 export async function restoreBackup(b: Backup) {
   // before version 4 a monthly invoice was typed in as stock: convert it the same way the database did
-  const tables = b.schema < 4 ? convertLegacyTables(b.tables) : b.tables;
+  const tables = { ...(b.schema < 4 ? convertLegacyTables(b.tables) : b.tables) };
+  // before version 5 all income was the store's (source 1) and there was no list of sources
+  if (!tables.income_sources?.length) tables.income_sources = DEFAULT_SOURCES;
   // only columns that exist in this version's tables (an older backup may have fewer)
   const known = new Map<string, Set<string>>();
   for (const t of TABLES) {

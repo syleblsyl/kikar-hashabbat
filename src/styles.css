@@ -652,3 +652,28 @@ a.btn { text-decoration: none; }
 .agent-hero .acts.four a, .agent-hero .acts.four span { font-size: 14px; gap: 4px; }
 .amt.est { color: var(--gold-ink); }
 .st-row .what small.st-stock { color: #2f5d9a; }
+
+/* 1.0.16 – daily income: one big box per place (the store, the mikveh) */
+.src-card { margin: 0 16px 12px; border-radius: 20px; padding: 16px 14px; display: flex; flex-direction: column; gap: 10px; border: 1.5px solid; }
+.src-card.s0 { background: var(--primary-soft); border-color: #eccbbd; }
+.src-card.s1 { background: var(--blue-soft); border-color: #c9d8ec; }
+.src-head { display: flex; align-items: center; gap: 12px; padding-bottom: 2px; }
+.src-head .ic { width: 50px; height: 50px; border-radius: 15px; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+.src-card.s0 .src-head .ic { background: var(--primary); }
+.src-card.s1 .src-head .ic { background: var(--blue); }
+.src-head b { flex: 1; min-width: 0; font-family: var(--display); font-weight: 400; font-size: 25px; line-height: 1.15; }
+.src-card.s0 .src-head b { color: var(--primary); }
+.src-card.s1 .src-head b { color: var(--blue); }
+.src-total { font-size: 21px; font-weight: 800; white-space: nowrap; }
+.src-row { display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 14px; padding: 10px 12px; }
+.src-row .mi { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.src-row .nm { font-size: 20px; font-weight: 800; min-width: 62px; }
+.src-row .money-in { flex: 1; min-width: 0; }
+.src-card + .day-total { border-top: 0; }
+.net-box .sub-line { padding: 4px 0; border-top: 0; }
+.net-box .sub-line span { font-weight: 600; font-size: 14px; padding-inline-start: 8px; }
+.net-box .sub-line b { font-weight: 700; font-size: 15px; color: var(--ink2); }
+.switcher .label em.cal-tag { background: var(--chip); color: var(--ink2); }
+.income-cal { margin-bottom: 12px; }
+.save-note { display: flex; gap: 10px; align-items: flex-start; }
+.src-sum + .src-sum { border-top: 1px solid var(--line-soft); margin-top: 8px; padding-top: 4px; }

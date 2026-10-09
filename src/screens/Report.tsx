@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ask } from '../components/Dialog';
 import { Icon } from '../components/Icon';
@@ -100,7 +100,7 @@ export function Report() {
   }
 
   const maxWeek = r ? Math.max(1, ...r.weeks.map((w) => Math.abs(w.net))) : 1;
-  const maxMethod = r ? Math.max(1, ...r.byMethod.map((m) => m.total)) : 1;
+  const maxMethod = r ? Math.max(1, ...r.bySource.flatMap((s) => s.methods.map((m) => m.total))) : 1;
   const empty = r && r.income === 0 && r.received === 0 && r.credit === 0 && r.invoiced === 0 && r.expenses === 0 && r.paid === 0;
   const mk = monthKey(new Date(ym.y, ym.m, 1));
 
@@ -212,18 +212,28 @@ export function Report() {
             <p className="hint" style={{ margin: '6px 0 0' }}>לפי שבוע – לפי המלאי (סחורה והחזרות של אותו שבוע)</p>
           </section>
 
-          {r.byMethod.length > 0 && (
+          {r.bySource.length > 0 && (
             <section className="card rsec">
-              <h2>הכנסות לפי אמצעי תשלום</h2>
-              <div className="bars">
-                {r.byMethod.map((m, i) => (
-                  <div key={m.name} className="bar-row">
-                    <span className="d" style={{ width: 64 }}>{m.name}</span>
-                    <HBar value={m.total} max={maxMethod} color={METHOD_COLORS[i % METHOD_COLORS.length]} />
-                    <span className="v nowrap" style={{ width: 118 }}>{shekel(m.total)} <small style={{ color: 'var(--ink2)' }}>{pct(m.total, r.income)}%</small></span>
+              <h2>הכנסות</h2>
+              {r.bySource.map((s) => (
+                <div key={s.id} className="src-sum">
+                  <div className="kv">
+                    <span>{s.name}</span>
+                    <b>
+                      {shekel(s.total)} <small style={{ color: 'var(--ink2)', fontWeight: 600 }}>{pct(s.total, r.income)}%</small>
+                    </b>
                   </div>
-                ))}
-              </div>
+                  <div className="bars">
+                    {s.methods.map((m, i) => (
+                      <div key={m.name} className="bar-row">
+                        <span className="d" style={{ width: 64 }}>{m.name}</span>
+                        <HBar value={m.total} max={maxMethod} color={METHOD_COLORS[i % METHOD_COLORS.length]} />
+                        <span className="v nowrap" style={{ width: 118 }}>{shekel(m.total)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </section>
           )}
 
@@ -342,13 +352,18 @@ function PrintReport({ r }: { r: MonthReport }) {
           )}
         </tbody>
       </table>
-      {r.byMethod.length > 0 && (
+      {r.bySource.length > 0 && (
         <>
-          <h2>הכנסות לפי אמצעי תשלום</h2>
+          <h2>הכנסות</h2>
           <table>
             <tbody>
-              {r.byMethod.map((m) => (
-                <tr key={m.name}><td>{m.name}</td><td>{money(m.total)}</td><td>{pct(m.total, r.income)}%</td></tr>
+              {r.bySource.map((s) => (
+                <Fragment key={s.id}>
+                  <tr><td><b>{s.name}</b></td><td><b>{money(s.total)}</b></td><td>{pct(s.total, r.income)}%</td></tr>
+                  {s.methods.map((m) => (
+                    <tr key={m.name}><td style={{ paddingInlineStart: 18 }}>{m.name}</td><td>{money(m.total)}</td><td /></tr>
+                  ))}
+                </Fragment>
               ))}
             </tbody>
           </table>

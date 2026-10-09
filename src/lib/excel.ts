@@ -56,7 +56,7 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     ],
     [
       { k: 'הכנסות ברוטו', v: r.income },
-      ...r.byMethod.map((m) => ({ k: `   ${m.name}`, v: m.total })),
+      ...r.bySource.flatMap((s) => [{ k: `   ${s.name}`, v: s.total }, ...s.methods.map((m) => ({ k: `      ${m.name}`, v: m.total }))]),
       { k: 'מלאי: סחורה שהגיעה', v: r.received },
       { k: 'מלאי: החזרות החודש', v: -r.credit },
       { k: 'לפי המלאי', v: r.expected },

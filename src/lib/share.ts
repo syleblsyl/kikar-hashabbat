@@ -1,4 +1,4 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 
@@ -11,6 +11,36 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+type FileSaverPlugin = {
+  saveToDownloads(o: { name: string; data: string; mime: string }): Promise<{ name: string; folder: string }>;
+};
+const FileSaver = registerPlugin<FileSaverPlugin>('FileSaver');
+
+function browserDownload(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+/**
+ * Saves the file in the phone's "Download" folder, like a normal download – nothing to choose or share.
+ * Returns the name it got (Android adds " (1)" when the name is taken).
+ */
+export async function saveToDownloads(filename: string, blob: Blob): Promise<string> {
+  if (!Capacitor.isNativePlatform()) {
+    browserDownload(filename, blob);
+    return filename;
+  }
+  const data = await blobToBase64(blob);
+  const res = await FileSaver.saveToDownloads({ name: filename, data, mime: blob.type || 'application/octet-stream' });
+  return res.name;
+}
+
 /** The person closed the share sheet without choosing where to send the file. */
 export class ShareCancelled extends Error {}
 
@@ -20,14 +50,7 @@ export class ShareCancelled extends Error {}
  */
 export async function shareFile(filename: string, blob: Blob, title: string) {
   if (!Capacitor.isNativePlatform()) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    browserDownload(filename, blob);
     return;
   }
   const data = await blobToBase64(blob);

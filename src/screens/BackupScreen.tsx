@@ -5,7 +5,7 @@ import { SubBar } from '../components/SubBar';
 import { toast } from '../components/Toast';
 import { BackupError, backupStats, lastBackup, makeBackup, markBackedUp, parseBackup, restoreBackup } from '../db/backup';
 import { fromIso, iso, today } from '../lib/dates';
-import { shareFile, ShareCancelled } from '../lib/share';
+import { saveToDownloads, shareFile, ShareCancelled } from '../lib/share';
 
 export function BackupScreen() {
   const [last, setLast] = useState<string | null>(null);
@@ -15,21 +15,43 @@ export function BackupScreen() {
     lastBackup().then(setLast);
   }, []);
 
+  const [savedAs, setSavedAs] = useState<string | null>(null);
+
+  async function backupFile() {
+    const b = await makeBackup();
+    return { b, blob: new Blob([JSON.stringify(b)], { type: 'application/json' }), name: `kikar-backup-${iso(today())}.json` };
+  }
+
+  /** The backup goes to the phone's Download folder, like any download. */
   async function backup() {
     setBusy(true);
     try {
-      const b = await makeBackup();
-      const s = backupStats(b);
-      const blob = new Blob([JSON.stringify(b)], { type: 'application/json' });
-      await shareFile(`kikar-backup-${iso(today())}.json`, blob, 'גיבוי כיכר השבת');
+      const { blob, name } = await backupFile();
+      const saved = await saveToDownloads(name, blob);
       await markBackedUp();
       setLast(iso(today()));
-      toast(`הגיבוי מוכן: ${s.products} מוצרים, ${s.agents} סוכנים, ${s.deliveries} קבלות סחורה, ${s.invoices} חשבוניות`);
+      setSavedAs(saved);
+      toast('הגיבוי נשמר בהורדות ✓');
     } catch (e) {
-      if (e instanceof ShareCancelled) toast('הגיבוי לא נשמר – צריך לבחור לאן לשלוח אותו');
-      else {
+      console.error(e);
+      const why = String((e as Error)?.message ?? e);
+      toast(/permission/.test(why) ? 'אין הרשאה לשמור בהורדות. אפשר לאשר בהגדרות הטלפון, או לשלוח את הגיבוי.' : 'השמירה נכשלה. נסה שוב, או שלח את הגיבוי.', 'err');
+    }
+    setBusy(false);
+  }
+
+  /** An extra copy, sent to WhatsApp / Drive / email. */
+  async function send() {
+    setBusy(true);
+    try {
+      const { blob, name } = await backupFile();
+      await shareFile(name, blob, 'גיבוי כיכר השבת');
+      await markBackedUp();
+      setLast(iso(today()));
+    } catch (e) {
+      if (!(e instanceof ShareCancelled)) {
         console.error(e);
-        toast('הגיבוי נכשל. נסה שוב.', 'err');
+        toast('השליחה נכשלה. נסה שוב.', 'err');
       }
     }
     setBusy(false);
@@ -86,14 +108,27 @@ export function BackupScreen() {
         <div className="box" style={{ gap: 8 }}>
           <b style={{ fontSize: 18 }}>כל הנתונים נשמרים רק בטלפון</b>
           <p className="hint" style={{ margin: 0 }}>
-            אם הטלפון יאבד או יתקלקל, רק גיבוי יחזיר את המחירון, הסוכנים וכל הרישומים. הגיבוי הוא קובץ אחד. אפשר לשמור אותו ב-Google Drive, לשלוח לעצמך בוואטסאפ או במייל.
+            אם הטלפון יאבד או יתקלקל, רק גיבוי יחזיר את המחירון, הסוכנים וכל הרישומים. הגיבוי הוא קובץ אחד, והוא נשמר בתיקיית ההורדות (Download) של הטלפון.
           </p>
           <p className="hint" style={{ margin: 0 }}>
             גיבוי אחרון: <b style={{ color: last ? 'var(--ink)' : 'var(--red)' }}>{last ? fromIso(last).toLocaleDateString('he-IL') : 'עוד לא נעשה'}</b>
           </p>
         </div>
         <button type="button" className="btn" onClick={backup} disabled={busy}>
-          <Icon name="upload" /> יצירת גיבוי ושמירה
+          <Icon name="download" /> שמירת גיבוי בהורדות
+        </button>
+        {savedAs && (
+          <div className="update-box ok" style={{ margin: 0 }}>
+            <p>
+              <b>✓ הגיבוי נשמר בתיקיית ההורדות (Download)</b>
+              {'\n'}
+              <bdi dir="ltr">{savedAs}</bdi>
+              {'\n'}אפשר למצוא אותו באפליקציית "קבצים" או "ההורדות שלי".
+            </p>
+          </div>
+        )}
+        <button type="button" className="center-link" style={{ background: 'none', border: 0 }} onClick={send} disabled={busy}>
+          רוצה גם עותק בוואטסאפ, Drive או מייל? שליחה
         </button>
         <div className="box" style={{ gap: 8 }}>
           <b style={{ fontSize: 17 }}>שחזור מגיבוי</b>
