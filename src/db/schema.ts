@@ -286,4 +286,28 @@ export const MIGRATIONS: string[] = [
   DROP TABLE _v5_count;
   UPDATE payment_methods SET active = 0 WHERE name = 'אחר' AND id NOT IN (SELECT method_id FROM daily_income);
   `,
+
+  // v6 — income in two parts of the selling day: the night before ("ליל שישי") and the day itself ("יום שישי").
+  // Both parts are dated with the day itself (Friday); old amounts are the day part.
+  `
+  CREATE TEMP TABLE _v6_count AS SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total FROM daily_income;
+  CREATE TABLE daily_income_v6 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    source_id INTEGER NOT NULL DEFAULT 1 REFERENCES income_sources(id),
+    part TEXT NOT NULL DEFAULT 'day' CHECK (part IN ('night', 'day')),
+    method_id INTEGER NOT NULL REFERENCES payment_methods(id),
+    amount REAL NOT NULL DEFAULT 0,
+    UNIQUE (date, source_id, part, method_id)
+  );
+  INSERT INTO daily_income_v6 (id, date, source_id, part, method_id, amount) SELECT id, date, source_id, 'day', method_id, amount FROM daily_income;
+  DROP TABLE daily_income;
+  ALTER TABLE daily_income_v6 RENAME TO daily_income;
+  CREATE INDEX IF NOT EXISTS idx_income_date ON daily_income (date);
+  CREATE TEMP TABLE _v6_guard (ok INTEGER CHECK (ok = 1));
+  INSERT INTO _v6_guard SELECT (SELECT COUNT(*) FROM daily_income) = (SELECT n FROM _v6_count)
+     AND abs((SELECT COALESCE(SUM(amount), 0) FROM daily_income) - (SELECT total FROM _v6_count)) < 0.005;
+  DROP TABLE _v6_guard;
+  DROP TABLE _v6_count;
+  `,
 ];

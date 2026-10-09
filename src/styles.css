@@ -677,3 +677,32 @@ a.btn { text-decoration: none; }
 .income-cal { margin-bottom: 12px; }
 .save-note { display: flex; gap: 10px; align-items: flex-start; }
 .src-sum + .src-sum { border-top: 1px solid var(--line-soft); margin-top: 8px; padding-top: 4px; }
+
+/* 1.0.17 – income: a button per place, then the night and the day */
+.src-btn { margin: 0 16px 12px; min-height: 120px; border-radius: 20px; padding: 18px 16px; display: flex; align-items: center; gap: 14px; border: 1.5px solid; color: var(--ink); }
+.src-btn.s0 { background: var(--primary-soft); border-color: #eccbbd; }
+.src-btn.s1 { background: var(--blue-soft); border-color: #c9d8ec; }
+.src-btn .ic { width: 58px; height: 58px; border-radius: 17px; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+.src-btn.s0 .ic { background: var(--primary); }
+.src-btn.s1 .ic { background: var(--blue); }
+.src-btn .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.src-btn .txt b { font-family: var(--display); font-weight: 400; font-size: 26px; line-height: 1.15; }
+.src-btn.s0 .txt b { color: var(--primary); }
+.src-btn.s1 .txt b { color: var(--blue); }
+.src-btn .txt span { font-size: 14px; color: var(--ink2); font-weight: 600; }
+.src-btn .txt .todo { color: var(--gold-ink); font-weight: 700; }
+.src-btn .sum { display: flex; align-items: center; gap: 4px; color: var(--ink2); }
+.src-btn .sum b { font-size: 20px; font-weight: 800; color: var(--ink); white-space: nowrap; }
+.src-btn:active { transform: scale(0.98); }
+.src-head .ttl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.src-head .ttl b { font-family: var(--display); font-weight: 400; font-size: 24px; line-height: 1.15; }
+.src-card.s0 .src-head .ttl b { color: var(--primary); }
+.src-card.s1 .src-head .ttl b { color: var(--blue); }
+.src-head .ttl small { font-size: 13px; color: var(--ink2); font-weight: 600; }
+.bar-ic { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+.bar-ic.s0 { background: var(--primary); }
+.bar-ic.s1 { background: var(--blue); }
+.save-sum { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.save-sum span { font-size: 16px; font-weight: 700; color: var(--ink2); }
+.save-sum b { font-family: var(--display); font-weight: 400; font-size: 28px; white-space: nowrap; }
+.cal-d.fri:not(.on) { border-color: var(--gold-line); background: var(--gold-soft); }

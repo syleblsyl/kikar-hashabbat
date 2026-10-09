@@ -78,18 +78,20 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
   const to = iso(new Date(year, month + 1, 0));
   const mk = monthKey(new Date(year, month, 1));
 
-  // income: one column per source and method ("מקווה ויזניץ – מזומן"); just the method while only one source is used
-  const incomeRows = await query<{ date: string; source: string; ssort: number; sid: number; method: string; msort: number; mid: number; amount: number }>(
-    `SELECT i.date, s.name AS source, s.sort AS ssort, s.id AS sid, m.name AS method, m.sort AS msort, m.id AS mid, i.amount
+  // income: one column per source, part and method ("מקווה ויזניץ – ליל – מזומן"); parts that are not used are left out
+  const incomeRows = await query<{ date: string; source: string; ssort: number; sid: number; part: string; method: string; msort: number; mid: number; amount: number }>(
+    `SELECT i.date, s.name AS source, s.sort AS ssort, s.id AS sid, i.part, m.name AS method, m.sort AS msort, m.id AS mid, i.amount
        FROM daily_income i JOIN payment_methods m ON m.id = i.method_id JOIN income_sources s ON s.id = i.source_id
-      WHERE i.date BETWEEN ? AND ? ORDER BY i.date, s.sort, s.id, m.sort, m.id`,
+      WHERE i.date BETWEEN ? AND ? ORDER BY i.date, s.sort, s.id, i.part DESC, m.sort, m.id`,
     [from, to],
   );
   const manySources = new Set(incomeRows.map((r) => r.sid)).size > 1;
-  const colOf = (r: (typeof incomeRows)[number]) => (manySources ? `${r.source} – ${r.method}` : r.method);
+  const withParts = incomeRows.some((r) => r.part === 'night');
+  const colOf = (r: (typeof incomeRows)[number]) =>
+    [manySources ? r.source : '', withParts ? (r.part === 'night' ? 'ליל' : 'יום') : '', r.method].filter(Boolean).join(' – ');
   const columns = [...new Map(
     [...incomeRows]
-      .sort((a, b) => a.ssort - b.ssort || a.sid - b.sid || a.msort - b.msort || a.mid - b.mid)
+      .sort((a, b) => a.ssort - b.ssort || a.sid - b.sid || (a.part === b.part ? 0 : a.part === 'night' ? -1 : 1) || a.msort - b.msort || a.mid - b.mid)
       .map((r) => [colOf(r), true] as const),
   ).keys()];
   const methods = columns;

@@ -1,288 +1,72 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { ask } from '../components/Dialog';
-import { useLeaveGuard } from '../components/guard';
+import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/Icon';
-import { toast } from '../components/Toast';
-import { MonthBar, sameYM, thisMonth } from '../components/MonthBar';
-import { incomeByDay, incomeForDay, incomeKey, listSources, methodsForDay, saveIncomeDay, type Method, type Source } from '../db/ops';
-import { addDays, DAY_NAMES, DAY_SHORT, fromIso, iso, parseIso, today } from '../lib/dates';
-import { dayEvents, hebDay, hebDayMonth } from '../lib/hebrew';
-import { parseAmountStrict, shekelSmart } from '../lib/money';
-import { useBack } from '../components/useBack';
-import { monthRange, monthSummary, type MonthSummary } from '../db/repo';
+import { SellingDayBar } from '../components/SellingDayBar';
+import { SubBar } from '../components/SubBar';
+import { dayTotalsBySource, listSources, type Source } from '../db/ops';
+import { monthSummary, type MonthSummary } from '../db/repo';
+import { fromIso, iso, parseIso, partNames, sellingDay } from '../lib/dates';
+import { shekelSmart } from '../lib/money';
 
-/** cash first (green), card (blue), anything else */
-function methodTone(name: string) {
-  if (/מזומן/.test(name)) return { bg: 'var(--green-soft)', fg: 'var(--green)', icon: 'cash' };
-  if (/אשראי|כרטיס/.test(name)) return { bg: 'var(--blue-soft)', fg: 'var(--blue)', icon: 'card' };
-  return { bg: 'var(--chip)', fg: 'var(--ink2)', icon: 'dots' };
-}
-
-function fmtInput(n: number) {
-  return n ? String(Number(n.toFixed(2))) : '';
-}
-
+/** Income: choose the place (the store or the mikveh) for a selling day. */
 export function Income() {
   const [params, setParams] = useSearchParams();
-  const back = useBack();
-  const date = iso(parseIso(params.get('date')) ?? today());
+  const date = iso(parseIso(params.get('date')) ?? sellingDay());
   const day = fromIso(date);
-  const ym = { y: day.getFullYear(), m: day.getMonth() };
+  const names = partNames(day);
   const [sources, setSources] = useState<Source[]>([]);
-  const [methods, setMethods] = useState<Method[]>([]);
-  /** "source|method" → typed text */
-  const [values, setValues] = useState<Record<string, string>>({});
-  /** hidden methods that have an amount today, per source */
-  const [extra, setExtra] = useState<Set<string>>(new Set());
-  /** what is saved for this day, to show month totals with today's typed amounts */
-  const [savedDay, setSavedDay] = useState<Map<string, number>>(new Map());
-  const [month, setMonth] = useState<Map<string, number>>(new Map());
-  const [dirty, setDirty] = useState(false);
+  const [totals, setTotals] = useState<Map<number, { night: number; day: number }>>(new Map());
   const [ms, setMs] = useState<MonthSummary | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [showCal, setShowCal] = useState(false);
-
-  const loadMonth = useCallback(async () => {
-    const { from, to } = monthRange(ym.y, ym.m);
-    const [byDay, summary] = await Promise.all([incomeByDay(from, to), monthSummary(ym.y, ym.m)]);
-    setMonth(byDay);
-    setMs(summary);
-  }, [ym.y, ym.m]);
 
   useEffect(() => {
-    (async () => {
-      const [src, mts, amounts] = await Promise.all([listSources(), methodsForDay(date), incomeForDay(date)]);
-      setSources(src);
-      setMethods(mts);
-      const v: Record<string, string> = {};
-      for (const s of src) for (const m of mts) v[incomeKey(s.id, m.id)] = fmtInput(amounts.get(incomeKey(s.id, m.id)) ?? 0);
-      setValues(v);
-      setExtra(new Set([...amounts.entries()].filter(([, a]) => a !== 0).map(([k]) => k)));
-      setSavedDay(amounts);
-      setDirty(false);
-    })();
+    Promise.all([listSources(), dayTotalsBySource(date), monthSummary(day.getFullYear(), day.getMonth())]).then(([s, t, m]) => {
+      setSources(s);
+      setTotals(t);
+      setMs(m);
+    });
   }, [date]);
 
-  useEffect(() => {
-    loadMonth();
-  }, [loadMonth]);
-
-  const keys = Object.keys(values);
-  const parsed = new Map(keys.map((k) => [k, parseAmountStrict(values[k] ?? '')]));
-  const invalid = keys.filter((k) => parsed.get(k) === null);
-  const sourceTotal = (sid: number) => methods.reduce((s, m) => s + (parsed.get(incomeKey(sid, m.id)) ?? 0), 0);
-  const dayTotal = sources.reduce((s, src) => s + sourceTotal(src.id), 0);
-  const live = new Map(month);
-  live.set(date, dayTotal);
-  const monthTotal = [...live.values()].reduce((a, b) => a + b, 0);
-  // the two ways money comes in: cash and card (by name; the first two methods if they were renamed)
-  const mainIds = new Set(
-    (() => {
-      const named = methods.filter((m) => m.active && (/מזומן/.test(m.name) || /אשראי|כרטיס/.test(m.name)));
-      return (named.length ? named : methods.filter((m) => m.active).slice(0, 2)).map((m) => m.id);
-    })(),
-  );
-  const nameOf = (k: string) => {
-    const [sid, mid] = k.split('|').map(Number);
-    return `${methods.find((m) => m.id === mid)?.name ?? ''} של ${sources.find((s) => s.id === sid)?.name ?? ''}`;
-  };
-
-  /** Saves the day. Returns false (and says why) if an amount is not a valid number. */
-  async function persist(): Promise<boolean> {
-    if (invalid.length > 0) {
-      toast(`הסכום ב${nameOf(invalid[0])} לא תקין. כותבים רק מספר, למשל 350 או 12.50`, 'err');
-      return false;
-    }
-    const rows = keys.map((k) => {
-      const [sourceId, methodId] = k.split('|').map(Number);
-      return { sourceId, methodId, amount: parsed.get(k) ?? 0 };
-    });
-    await saveIncomeDay(date, rows);
-    setSavedDay(new Map(rows.map((r) => [incomeKey(r.sourceId, r.methodId), r.amount])));
-    setDirty(false);
-    await loadMonth();
-    return true;
-  }
-
-  // leaving the screen saves what was typed (like switching days); a bad amount asks first
-  useLeaveGuard(dirty, async () => {
-    if (invalid.length === 0) {
-      try {
-        return await persist();
-      } catch {
-        return ask({ title: 'השמירה נכשלה', text: 'לצאת בלי לשמור?', ok: 'לצאת בלי לשמור', cancel: 'להישאר', danger: true });
-      }
-    }
-    return ask({
-      title: 'יש סכום לא תקין',
-      text: `הסכום ב${nameOf(invalid[0])} לא מספר, ולכן היום לא נשמר. לצאת בלי לשמור?`,
-      ok: 'לצאת בלי לשמור',
-      cancel: 'להישאר ולתקן',
-      danger: true,
-    });
-  });
-
-  async function pick(d: string) {
-    if (d === date) return;
-    if (dirty && !(await persist())) return;
+  function pick(d: string) {
     const p = new URLSearchParams(params);
     p.set('date', d);
     setParams(p, { replace: true });
   }
 
-  async function save() {
-    setSaving(true);
-    try {
-      if (await persist()) toast(`נשמר: ${shekelSmart(dayTotal)} ליום ${DAY_NAMES[day.getDay()]}`);
-    } catch (e) {
-      console.error(e);
-      toast('השמירה נכשלה. נסה שוב.', 'err');
-    }
-    setSaving(false);
-  }
-
-  const events = dayEvents(day);
-  const todayIso = iso(today());
-  const isToday = date === todayIso;
-  // the month as a calendar: Sunday first, blanks before the 1st
-  const first = new Date(ym.y, ym.m, 1);
-  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
-  const cells: (string | null)[] = [
-    ...Array.from({ length: first.getDay() }, () => null),
-    ...Array.from({ length: daysInMonth }, (_, i) => iso(new Date(ym.y, ym.m, i + 1))),
-  ];
+  const dayTotal = [...totals.values()].reduce((s, t) => s + t.night + t.day, 0);
 
   return (
     <>
-      <header className="bar">
-        <button type="button" className="icon-btn" aria-label="חזרה" onClick={() => back()}>
-          <Icon name="back" />
-        </button>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <h1 className="page-title">הכנסה יומית</h1>
-          <span className="sub" style={{ fontSize: 14 }}>ברוטו – כל מה שנכנס, לפני תשלום לסוכנים</span>
-        </div>
-      </header>
+      <SubBar title="הכנסות יומיות" sub="בוחרים מקום: החנות או המקווה" />
+      <SellingDayBar date={date} onPick={pick} />
 
-      {/* which day */}
-      <div className="pad" style={{ marginBottom: 10 }}>
-        <div className="switcher">
-          <button type="button" aria-label="היום הקודם" onClick={() => pick(iso(addDays(day, -1)))}>
-            <Icon name="prev" stroke={2.5} />
-          </button>
-          <button type="button" className="label" onClick={() => setShowCal((x) => !x)} aria-expanded={showCal} aria-label="בחירת יום בלוח">
-            <b>
-              יום {DAY_NAMES[day.getDay()]}, {day.getDate()}.{day.getMonth() + 1}
-            </b>
-            <span>
-              {hebDayMonth(day)}
-              {events.length > 0 ? ` · ${events.map((e) => e.name).join(', ')}` : ''}
-            </span>
-            {isToday ? <em>היום</em> : <em className="cal-tag">{showCal ? 'סגירת הלוח' : 'לוח'}</em>}
-          </button>
-          <button type="button" aria-label="היום הבא" disabled={date >= todayIso} onClick={() => pick(iso(addDays(day, 1)))}>
-            <Icon name="next" stroke={2.5} />
-          </button>
-        </div>
-      </div>
-
-      {showCal && (
-        <section className="income-cal">
-          <div className="pad" style={{ marginBottom: 8 }}>
-            <MonthBar
-              ym={ym}
-              onChange={(next) => {
-                pick(sameYM(next, thisMonth()) ? todayIso : iso(new Date(next.y, next.m, 1)));
-              }}
-            />
-          </div>
-          <div className="cal" role="grid" aria-label="ימי החודש">
-            {DAY_SHORT.map((d) => (
-              <span key={d} className="cal-h">{d}</span>
-            ))}
-            {cells.map((d, i) => {
-              if (!d) return <span key={`b${i}`} />;
-              const dd = fromIso(d);
-              const chag = dayEvents(dd).some((e) => e.chag);
-              const v = live.get(d) ?? 0;
-              const cls = ['cal-d', d === date ? 'on' : '', chag ? 'chag' : '', dd.getDay() === 6 ? 'sat' : '', d === todayIso ? 'today' : '', d > todayIso ? 'future' : ''].join(' ');
-              return (
-                <button
-                  key={d}
-                  type="button"
-                  className={cls}
-                  onClick={() => {
-                    pick(d);
-                    setShowCal(false);
-                  }}
-                  aria-pressed={d === date}
-                  aria-label={`${DAY_NAMES[dd.getDay()]} ${dd.getDate()}${v > 0 ? `, ${Math.round(v)} שקלים` : ''}`}
-                >
-                  <b>{dd.getDate()}</b>
-                  <span className="h">{hebDay(dd)}</span>
-                  <span className={`mark${v > 0 ? ' has' : ''}`} />
-                </button>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* one big box per place: the store on top, the mikveh under it */}
-      {sources.map((src, si) => {
-        // cash and card always; any other method only where it already has an amount that day
-        const shown = methods.filter((m) => mainIds.has(m.id) || extra.has(incomeKey(src.id, m.id)));
+      {sources.map((src, i) => {
+        const t = totals.get(src.id) ?? { night: 0, day: 0 };
+        const has = t.night !== 0 || t.day !== 0;
         return (
-          <section key={src.id} className={`src-card s${si % 2}`} aria-label={src.name}>
-            <div className="src-head">
-              <span className="ic">
-                <Icon name={si === 0 ? 'store' : 'drop'} size={26} />
-              </span>
+          <Link key={src.id} to={`/income/${src.id}?date=${date}`} className={`src-btn s${i % 2}`}>
+            <span className="ic">
+              <Icon name={i === 0 ? 'store' : 'drop'} size={30} />
+            </span>
+            <span className="txt">
               <b>{src.name}</b>
-              <span className="src-total">{shekelSmart(sourceTotal(src.id))}</span>
-            </div>
-            {shown.map((m) => {
-              const k = incomeKey(src.id, m.id);
-              const t = methodTone(m.name);
-              const bad = parsed.get(k) === null;
-              return (
-                <div key={k}>
-                  <label className="src-row">
-                    <span className="mi" style={{ background: t.bg, color: t.fg }}>
-                      <Icon name={t.icon} />
-                    </span>
-                    <span className="nm">
-                      {m.name}
-                      {!m.active && <small className="muted-tag">מוסתר</small>}
-                    </span>
-                    <span className={`money-in big${bad ? ' bad' : ''}`}>
-                      <input
-                        inputMode="decimal"
-                        enterKeyHint="next"
-                        placeholder="0"
-                        aria-label={`${m.name} – ${src.name}`}
-                        aria-invalid={bad}
-                        value={values[k] ?? ''}
-                        onFocus={(e) => e.currentTarget.select()}
-                        onChange={(e) => {
-                          setValues((v) => ({ ...v, [k]: e.target.value }));
-                          setDirty(true);
-                        }}
-                      />
-                      <span>₪</span>
-                    </span>
-                  </label>
-                  {bad && <div className="field-err">כותבים רק מספר, למשל 350 או 12.50</div>}
-                </div>
-              );
-            })}
-          </section>
+              {has ? (
+                <span>
+                  {names.night} {shekelSmart(t.night)} · {names.day} {shekelSmart(t.day)}
+                </span>
+              ) : (
+                <span className="todo">עוד לא נרשם · לחיצה לרישום</span>
+              )}
+            </span>
+            <span className="sum">
+              {has && <b>{shekelSmart(t.night + t.day)}</b>}
+              <Icon name="chevron" size={22} />
+            </span>
+          </Link>
         );
       })}
 
-      <div className="day-total pad" style={{ marginTop: 12 }}>
-        <span>סה״כ היום</span>
+      <div className="day-total pad" style={{ marginTop: 4 }}>
+        <span>סה״כ {names.night} ו{names.day}</span>
         <b>{shekelSmart(dayTotal)}</b>
       </div>
 
@@ -290,19 +74,15 @@ export function Income() {
         <section className="box net-box">
           <div>
             <span>הכנסות ברוטו החודש</span>
-            <b>{shekelSmart(monthTotal)}</b>
+            <b>{shekelSmart(ms.income)}</b>
           </div>
           {ms.bySource.length > 1 &&
-            ms.bySource.map((s) => {
-              // the month total of this source, with today's typed amounts instead of the saved ones
-              const saved = [...savedDay.entries()].filter(([k]) => k.startsWith(`${s.id}|`)).reduce((t, [, a]) => t + a, 0);
-              return (
-                <div key={s.id} className="sub-line">
-                  <span>· {s.name}</span>
-                  <b>{shekelSmart(s.total - saved + sourceTotal(s.id))}</b>
-                </div>
-              );
-            })}
+            ms.bySource.map((s) => (
+              <div key={s.id} className="sub-line">
+                <span>· {s.name}</span>
+                <b>{shekelSmart(s.total)}</b>
+              </div>
+            ))}
           <div>
             <span>
               פחות: חיובי סוכנים
@@ -316,17 +96,11 @@ export function Income() {
           </div>
           <div className="total">
             <span>נשאר בקופה החודש</span>
-            <b>{shekelSmart(monthTotal - ms.goodsCost - ms.expenses)}</b>
+            <b>{shekelSmart(ms.net)}</b>
           </div>
         </section>
       )}
-
-      <div className="sticky-save">
-        {dirty && <div className="unsaved">יש שינויים שעוד לא נשמרו · נשמרים גם במעבר ליום אחר</div>}
-        <button type="button" className="btn" onClick={save} disabled={saving}>
-          {saving ? 'שומר…' : 'שמירה'}
-        </button>
-      </div>
+      <div style={{ height: 24 }} />
     </>
   );
 }

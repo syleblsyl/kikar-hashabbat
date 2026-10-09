@@ -223,6 +223,11 @@ export function Report() {
                       {shekel(s.total)} <small style={{ color: 'var(--ink2)', fontWeight: 600 }}>{pct(s.total, r.income)}%</small>
                     </b>
                   </div>
+                  {s.night !== 0 && (
+                    <p className="hint" style={{ margin: '0 0 4px' }}>
+                      ליל {shekel(s.night)} · יום {shekel(s.day)}
+                    </p>
+                  )}
                   <div className="bars">
                     {s.methods.map((m, i) => (
                       <div key={m.name} className="bar-row">
@@ -359,7 +364,7 @@ function PrintReport({ r }: { r: MonthReport }) {
             <tbody>
               {r.bySource.map((s) => (
                 <Fragment key={s.id}>
-                  <tr><td><b>{s.name}</b></td><td><b>{money(s.total)}</b></td><td>{pct(s.total, r.income)}%</td></tr>
+                  <tr><td><b>{s.name}</b>{s.night !== 0 ? ` (ליל ${money(s.night)} · יום ${money(s.day)})` : ''}</td><td><b>{money(s.total)}</b></td><td>{pct(s.total, r.income)}%</td></tr>
                   {s.methods.map((m) => (
                     <tr key={m.name}><td style={{ paddingInlineStart: 18 }}>{m.name}</td><td>{money(m.total)}</td><td /></tr>
                   ))}

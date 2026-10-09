@@ -29,6 +29,7 @@ import { AgentCard } from './screens/AgentCard';
 import { Delivery } from './screens/Delivery';
 import { Returns } from './screens/Returns';
 import { Income } from './screens/Income';
+import { IncomeEntry } from './screens/IncomeEntry';
 import { Expenses } from './screens/Expenses';
 import { PaymentPick } from './screens/PaymentPick';
 import { ToastHost } from './components/Toast';
@@ -163,6 +164,7 @@ function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps)
             <Route path="/delivery" element={<Navigate to="/stock" replace />} />
             <Route path="/returns" element={<Returns />} />
             <Route path="/income" element={<Income />} />
+            <Route path="/income/:source" element={<IncomeEntry />} />
             <Route path="/payment" element={<PaymentPick />} />
             <Route path="/expense" element={<Expenses />} />
             <Route path="*" element={<Soon title="לא נמצא" what="המסך הזה לא קיים." />} />

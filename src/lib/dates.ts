@@ -85,3 +85,29 @@ export const dm = (s: string) => {
   const d = fromIso(s);
   return `${d.getDate()}.${d.getMonth() + 1}`;
 };
+
+/* ---------- the selling day (Friday) and its night (Thursday evening) ---------- */
+
+/**
+ * The day income is entered for: Friday, whose night ("ליל שישי") is Thursday evening.
+ * Thursday → tomorrow's Friday; Saturday to Wednesday → the Friday that passed.
+ */
+export function sellingDay(d: Date = today()): Date {
+  const w = d.getDay();
+  if (w === 5) return d;
+  if (w === 4) return addDays(d, 1);
+  return addDays(d, -((w + 2) % 7));
+}
+export const nextFriday = (d: Date) => addDays(d, (5 - d.getDay() + 7) % 7 || 7);
+export const prevFriday = (d: Date) => addDays(d, -((d.getDay() - 5 + 7) % 7 || 7));
+
+/** "ליל שישי" / "יום שישי" for a selling day, and when each part is. */
+export function partNames(d: Date) {
+  const eve = addDays(d, -1);
+  return {
+    night: `ליל ${DAY_NAMES[d.getDay()]}`,
+    day: `יום ${DAY_NAMES[d.getDay()]}`,
+    nightWhen: `${DAY_SHORT[eve.getDay()]} ${eve.getDate()}.${eve.getMonth() + 1} בערב`,
+    dayWhen: `${DAY_SHORT[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1}`,
+  };
+}

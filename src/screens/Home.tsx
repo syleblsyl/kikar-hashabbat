@@ -7,7 +7,7 @@ import { agentsForMonth, getSetting, monthSummary, setSetting, type AgentMonthRo
 import { ensureRecurring, pendingReturns, type StockRow } from '../db/ops';
 import { monthAgents, type MonthAgentRow } from '../db/billing';
 import { ask } from '../components/Dialog';
-import { addMonthKey, iso, longDate, monthName, thisMonthKey, today } from '../lib/dates';
+import { addMonthKey, iso, longDate, monthName, sellingDay, thisMonthKey, today } from '../lib/dates';
 import { dayEvents, hebDate } from '../lib/hebrew';
 import { shekel, shekelSmart } from '../lib/money';
 import type { UpdateInfo } from '../lib/updater';
@@ -33,7 +33,11 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
   const now = today();
   const isCurrent = sameYM(ym, thisMonth());
   const todayEvents = dayEvents(now);
-  const incomeDate = isCurrent ? iso(now) : iso(new Date(ym.y, ym.m, 1));
+  const incomeDate = isCurrent ? iso(sellingDay()) : (() => {
+    const d = new Date(ym.y, ym.m + 1, 0);
+    while (d.getDay() !== 5) d.setDate(d.getDate() - 1);
+    return iso(d);
+  })();
 
   useEffect(() => {
     let alive = true;
@@ -55,7 +59,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
   const tiles = [
     { to: `/stock?month=${ymKey(ym)}`, icon: 'truck', label: 'מלאי', sub: 'סחורה שהגיעה', bg: 'var(--primary-soft)', fg: 'var(--primary)' },
     { to: '/returns', icon: 'undo', label: 'החזרות', sub: 'מה שהסוכן לקח', bg: 'var(--gold-soft)', fg: 'var(--gold-ink)' },
-    { to: `/income?date=${incomeDate}`, icon: 'cash', label: 'הכנסה יומית', sub: 'מה נכנס לקופה', bg: 'var(--green-soft)', fg: 'var(--green)' },
+    { to: `/income?date=${incomeDate}`, icon: 'cash', label: 'הכנסות יומיות', sub: 'חנות ומקווה', bg: 'var(--green-soft)', fg: 'var(--green)' },
     { to: '/payment', icon: 'wallet', label: 'תשלום לסוכן', sub: 'כסף ששילמתי', bg: 'var(--blue-soft)', fg: 'var(--blue)' },
     { to: `/expense?month=${ymKey(ym)}`, icon: 'sheet', label: 'הוצאות', sub: 'קבועות ופועלים', bg: 'var(--red-soft)', fg: 'var(--red)' },
     { to: '/invoices', icon: 'receipt', label: 'חשבוניות', sub: 'פעם בחודש מכל סוכן', bg: 'var(--chip)', fg: 'var(--ink2)' },

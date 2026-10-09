@@ -365,8 +365,16 @@ export async function listSources(): Promise<Source[]> {
   return query<Source>('SELECT * FROM income_sources WHERE active = 1 ORDER BY sort, id');
 }
 
-/** "source|method" → amount */
-export const incomeKey = (sourceId: number, methodId: number) => `${sourceId}|${methodId}`;
+/** The two parts of a selling day: the night before it ("ליל שישי") and the day itself ("יום שישי"). Both are dated with the day. */
+export type Part = 'night' | 'day';
+export const PARTS: Part[] = ['night', 'day'];
+
+/** "source|part|method" → amount */
+export const incomeKey = (sourceId: number, part: Part, methodId: number) => `${sourceId}|${part}|${methodId}`;
+export function parseIncomeKey(k: string): { sourceId: number; part: Part; methodId: number } {
+  const [s, p, m] = k.split('|');
+  return { sourceId: Number(s), part: p === 'night' ? 'night' : 'day', methodId: Number(m) };
+}
 
 /** Payment methods to show for a day: the active ones, plus hidden ones that already have an amount that day. */
 export async function methodsForDay(date: string): Promise<Method[]> {
@@ -378,23 +386,27 @@ export async function methodsForDay(date: string): Promise<Method[]> {
   );
 }
 
-/** The day's amounts by "source|method". */
+/** The day's amounts by "source|part|method". */
 export async function incomeForDay(date: string): Promise<Map<string, number>> {
-  const rows = await query<{ source_id: number; method_id: number; amount: number }>('SELECT source_id, method_id, amount FROM daily_income WHERE date = ?', [date]);
-  return new Map(rows.map((r) => [incomeKey(Number(r.source_id), Number(r.method_id)), Number(r.amount)]));
+  const rows = await query<{ source_id: number; part: string; method_id: number; amount: number }>(
+    'SELECT source_id, part, method_id, amount FROM daily_income WHERE date = ?',
+    [date],
+  );
+  return new Map(rows.map((r) => [incomeKey(Number(r.source_id), r.part === 'night' ? 'night' : 'day', Number(r.method_id)), Number(r.amount)]));
 }
 
-export async function saveIncomeDay(date: string, amounts: { sourceId: number; methodId: number; amount: number }[]) {
+/** Saves amounts of one day (only the ones given – another source's amounts stay as they are). */
+export async function saveIncomeDay(date: string, amounts: { sourceId: number; part: Part; methodId: number; amount: number }[]) {
   const set: { statement: string; values?: unknown[] }[] = [];
-  for (const { sourceId, methodId, amount } of amounts) {
+  for (const { sourceId, part, methodId, amount } of amounts) {
     if (amount > 0) {
       set.push({
-        statement: `INSERT INTO daily_income (date, source_id, method_id, amount) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(date, source_id, method_id) DO UPDATE SET amount = excluded.amount`,
-        values: [date, sourceId, methodId, amount],
+        statement: `INSERT INTO daily_income (date, source_id, part, method_id, amount) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(date, source_id, part, method_id) DO UPDATE SET amount = excluded.amount`,
+        values: [date, sourceId, part, methodId, amount],
       });
     } else {
-      set.push({ statement: 'DELETE FROM daily_income WHERE date = ? AND source_id = ? AND method_id = ?', values: [date, sourceId, methodId] });
+      set.push({ statement: 'DELETE FROM daily_income WHERE date = ? AND source_id = ? AND part = ? AND method_id = ?', values: [date, sourceId, part, methodId] });
     }
   }
   await runSet(set);
@@ -408,29 +420,57 @@ export async function incomeByDay(from: string, to: string): Promise<Map<string,
   return new Map(rows.map((r) => [r.date, Number(r.total)]));
 }
 
-/** Income of a period per source (store / mikveh), with the methods inside each. */
-export type SourceTotal = { id: number; name: string; total: number; methods: { name: string; total: number }[] };
+/** Income of a period per source (store / mikveh), with its methods and its two parts. */
+export type SourceTotal = {
+  id: number;
+  name: string;
+  total: number;
+  methods: { name: string; total: number }[];
+  night: number;
+  day: number;
+};
 export async function incomeBySource(from: string, to: string): Promise<SourceTotal[]> {
   const [sources, rows] = await Promise.all([
     query<Source>('SELECT * FROM income_sources ORDER BY sort, id'),
-    query<{ source_id: number; method: string; msort: number; mid: number; total: number }>(
-      `SELECT i.source_id, m.name AS method, m.sort AS msort, m.id AS mid, SUM(i.amount) AS total
+    query<{ source_id: number; part: string; method: string; total: number }>(
+      `SELECT i.source_id, i.part, m.name AS method, SUM(i.amount) AS total
          FROM daily_income i JOIN payment_methods m ON m.id = i.method_id
-        WHERE i.date BETWEEN ? AND ? GROUP BY i.source_id, m.id ORDER BY m.sort, m.id`,
+        WHERE i.date BETWEEN ? AND ? GROUP BY i.source_id, i.part, m.id ORDER BY m.sort, m.id`,
       [from, to],
     ),
   ]);
   return sources
     .map((s) => {
       const mine = rows.filter((r) => Number(r.source_id) === Number(s.id));
+      const methods = new Map<string, number>();
+      for (const r of mine) methods.set(r.method, (methods.get(r.method) ?? 0) + Number(r.total));
+      const sum = (part: string) => mine.filter((r) => r.part === part).reduce((t, r) => t + Number(r.total), 0);
       return {
         id: Number(s.id),
         name: s.name,
         total: mine.reduce((t, r) => t + Number(r.total), 0),
-        methods: mine.map((r) => ({ name: r.method, total: Number(r.total) })),
+        methods: [...methods.entries()].map(([name, total]) => ({ name, total })),
+        night: sum('night'),
+        day: sum('day'),
       };
     })
     .filter((s) => s.total !== 0 || sources.find((x) => x.id === s.id)?.active);
+}
+
+/** Per source, its total for one selling day (night + day), for the choice buttons. */
+export async function dayTotalsBySource(date: string): Promise<Map<number, { night: number; day: number }>> {
+  const rows = await query<{ source_id: number; part: string; total: number }>(
+    'SELECT source_id, part, SUM(amount) AS total FROM daily_income WHERE date = ? GROUP BY source_id, part',
+    [date],
+  );
+  const map = new Map<number, { night: number; day: number }>();
+  for (const r of rows) {
+    const t = map.get(Number(r.source_id)) ?? { night: 0, day: 0 };
+    if (r.part === 'night') t.night += Number(r.total);
+    else t.day += Number(r.total);
+    map.set(Number(r.source_id), t);
+  }
+  return map;
 }
 
 /* ======================= expenses ======================= */
