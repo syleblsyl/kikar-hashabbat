@@ -151,8 +151,8 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
   const payRows = await query<{ date: string; agent_id: number; agent: string; color: string | null; amount: number; method: string | null; note: string | null }>(
     `SELECT p.date, p.agent_id, a.name AS agent, a.color, p.amount, p.method, p.note
        FROM agent_payments p JOIN agents a ON a.id = p.agent_id
-      WHERE p.date BETWEEN ? AND ? ORDER BY p.date`,
-    [from, to],
+      WHERE COALESCE(p.month, substr(p.date, 1, 7)) = ? ORDER BY p.date`,
+    [mk],
   );
   const paidBy = new Map<number, number>();
   let paid = 0;

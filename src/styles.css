@@ -706,3 +706,69 @@ a.btn { text-decoration: none; }
 .save-sum span { font-size: 16px; font-weight: 700; color: var(--ink2); }
 .save-sum b { font-family: var(--display); font-weight: 400; font-size: 28px; white-space: nowrap; }
 .cal-d.fri:not(.on) { border-color: var(--gold-line); background: var(--gold-soft); }
+.st-row { grid-template-columns: 62px minmax(0, 1fr) auto auto; }
+
+/* 1.0.18 – agent card: rows of חובה and זכות by month */
+.tile.wide { grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: flex-start; min-height: 84px; }
+.tile.wide .ic { width: 50px; height: 50px; border-radius: 14px; }
+.tile.wide b { font-size: 19px; }
+.side-btns .btn { height: 56px; font-size: 19px; font-weight: 800; }
+.side-btns .btn.debit { background: var(--red); }
+.side-btns .btn.credit { background: var(--green); }
+.side-seg > .d.on { background: var(--red); color: #fff; }
+.side-seg > .c.on { background: var(--green); color: #fff; }
+.row-form { margin: 12px 16px 0; padding: 16px; gap: 12px; border-width: 2px; }
+.row-form .lbl { font-size: 16px; font-weight: 800; color: var(--ink); margin-bottom: -4px; }
+.row-form .switcher { margin: 0; }
+.rows-month { margin: 10px 16px 0; padding: 4px 14px 2px; }
+.rm-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0 2px; }
+.rm-head b { font-size: 18px; font-weight: 800; }
+.rm-sum { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 14px; font-weight: 700; color: var(--ink2); padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+.rm-sum .owe { color: var(--red); font-weight: 800; }
+.rm-sum .plus { color: var(--green); font-weight: 800; }
+.rm-sum .ok { color: var(--green); font-weight: 800; }
+.rm-sum span:last-child { margin-inline-start: auto; }
+.side-tag { flex-shrink: 0; min-width: 48px; text-align: center; font-size: 13px; font-weight: 800; border-radius: 8px; padding: 4px 6px; }
+.side-tag.d { background: var(--red-soft); color: var(--red); }
+.side-tag.c { background: var(--green-soft); color: var(--green); }
+.rows-month .entry-wrap:first-of-type .entry { border-top: 0; }
+.agents-search { padding: 0 16px 6px; }
+.agents-search .searchbox { height: 52px; }
+
+/* 1.0.18 – income: how much in cash and how much in credit */
+.day-methods { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 14px; margin: -2px 16px 12px; font-size: 14px; font-weight: 700; color: var(--ink2); }
+.day-methods span, .msplit-inline span, .msplit-row span { display: inline-flex; align-items: center; gap: 6px; }
+.day-methods i, .msplit-inline i, .msplit-row i { width: 10px; height: 10px; border-radius: 5px; flex-shrink: 0; }
+.msplit-box { margin: 4px 16px 12px; padding: 14px; gap: 12px; }
+.msplit-box h2 { font-size: 18px; font-weight: 800; }
+.msplit-total { display: flex; justify-content: space-between; align-items: baseline; }
+.msplit-total span { font-weight: 700; color: var(--ink2); }
+.msplit-total b { font-family: var(--display); font-weight: 400; font-size: 26px; white-space: nowrap; }
+.msplit { display: flex; flex-direction: column; gap: 8px; }
+.msplit-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--chip); }
+.msplit-bar.thin { height: 8px; border-radius: 4px; }
+.msplit-bar i { display: block; height: 100%; }
+.msplit-rows { display: flex; flex-direction: column; }
+.msplit-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.msplit-row:first-child { border-top: 0; }
+.msplit-row span { flex: 1; font-size: 17px; font-weight: 800; }
+.msplit-row b { font-size: 19px; font-weight: 800; white-space: nowrap; }
+.msplit-row small { width: 40px; text-align: left; font-size: 13px; font-weight: 700; color: var(--ink2); }
+.msplit-src { display: flex; flex-direction: column; gap: 2px; background: var(--chip); border-radius: 12px; padding: 8px 12px; }
+.msplit-src b { font-size: 15px; font-weight: 800; }
+.msplit-src span { font-size: 14px; font-weight: 700; color: var(--ink2); }
+.msplit-months { display: flex; flex-direction: column; }
+.msplit-month { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line-soft); }
+.msplit-month:first-child { border-top: 0; padding-top: 2px; }
+.mm-top { display: flex; justify-content: space-between; align-items: baseline; }
+.mm-top b { font-size: 16px; font-weight: 800; }
+.mm-top span { font-size: 16px; font-weight: 800; white-space: nowrap; }
+.msplit.compact { gap: 6px; }
+.msplit-inline { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 14px; font-weight: 600; color: var(--ink2); }
+.msplit-inline b { color: var(--ink); font-weight: 800; }
+.rows-key { margin: 8px 16px 0; font-size: 12px; }
+.miss-hint { color: var(--gold-ink); font-weight: 700; }
+.rows-month.miss { border-color: var(--gold-line); }
+.rm-sum .wait { color: var(--gold-ink); font-weight: 800; }
+.rows-month .miss-add { margin: 8px 0 10px; width: 100%; }
+.amt-col small.miss { color: var(--gold-ink); }

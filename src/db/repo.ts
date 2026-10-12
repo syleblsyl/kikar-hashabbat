@@ -61,7 +61,7 @@ export async function monthSummary(year: number, month: number): Promise<MonthSu
   const [inc] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM daily_income WHERE date BETWEEN ? AND ?', [from, to]);
   const bySource = await incomeBySource(from, to);
   const rows = await monthAgents(mk);
-  const [pay] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM agent_payments WHERE date BETWEEN ? AND ?', [from, to]);
+  const [pay] = await query<{ total: number }>('SELECT COALESCE(SUM(amount), 0) AS total FROM agent_payments WHERE COALESCE(month, substr(date, 1, 7)) = ?', [mk]);
   const [exp] = await query<{ total: number; fixed: number; workers: number }>(
     `SELECT COALESCE(SUM(amount), 0) AS total,
             COALESCE(SUM(CASE WHEN recurring_id IS NOT NULL THEN amount ELSE 0 END), 0) AS fixed,
@@ -70,8 +70,9 @@ export async function monthSummary(year: number, month: number): Promise<MonthSu
     [from, to],
   );
   const cents = (n: number) => Math.round(n * 100);
-  const byInvoice = rows.filter((r) => r.m.source === 'invoice').reduce((s, r) => s + cents(r.m.charge), 0) / 100;
-  const byStock = rows.filter((r) => r.m.source === 'stock').reduce((s, r) => s + cents(r.m.charge), 0) / 100;
+  // only what was written in the agents' cards; stock is not counted (it is only for checking invoices)
+  const byInvoice = rows.reduce((s, r) => s + cents(r.m.charge), 0) / 100;
+  const byStock = 0;
   const income = Number(inc?.total ?? 0);
   const goodsCost = Math.round((byInvoice + byStock) * 100) / 100;
   const expenses = Number(exp?.total ?? 0);
@@ -113,13 +114,12 @@ export type AgentMonthRow = {
 };
 
 export async function agentsForMonth(year: number, month: number): Promise<AgentMonthRow[]> {
-  const { from, to } = monthRange(year, month);
   const mk = monthKey(new Date(year, month, 1));
   const [agents, rows, bal, pays] = await Promise.all([
     query<{ id: number; name: string; color: string | null; active: number }>('SELECT id, name, color, active FROM agents'),
     monthAgents(mk),
     balances(),
-    query<{ agent_id: number; total: number }>('SELECT agent_id, SUM(amount) AS total FROM agent_payments WHERE date BETWEEN ? AND ? GROUP BY agent_id', [from, to]),
+    query<{ agent_id: number; total: number }>('SELECT agent_id, SUM(amount) AS total FROM agent_payments WHERE COALESCE(month, substr(date, 1, 7)) = ? GROUP BY agent_id', [mk]),
   ]);
   const byAgent = new Map(rows.map((r) => [r.agentId, r]));
   const paid = new Map(pays.map((p) => [Number(p.agent_id), Number(p.total)]));

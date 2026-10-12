@@ -64,7 +64,7 @@ export function AgentStatement() {
           ))}
         </div>
         <button type="button" className={`chip${details ? ' on' : ''}`} aria-pressed={details} onClick={() => setDetails((d) => !d)}>
-          פירוט
+          השוואה למלאי
         </button>
       </div>
 

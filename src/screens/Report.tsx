@@ -2,8 +2,10 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ask } from '../components/Dialog';
 import { Icon } from '../components/Icon';
+import { MethodBar } from '../components/MethodSplit';
 import { matches, SearchBox } from '../components/SearchBox';
 import { toast } from '../components/Toast';
+import type { MethodTotal } from '../db/ops';
 import { monthReport, type MonthReport } from '../db/report';
 import { fromIso, monthKey, MONTHS, today } from '../lib/dates';
 import { hebDate } from '../lib/hebrew';
@@ -52,7 +54,7 @@ export function Report() {
   async function okToExport(): Promise<boolean> {
     if (!r || (r.waiting === 0 && r.openReturns === 0)) return true;
     const parts = [
-      r.waiting > 0 ? `${r.waiting === 1 ? 'חשבונית אחת' : `${r.waiting} חשבוניות`} על ${MONTHS[r.month]} עוד לא נרשמו – אצל הסוכנים האלה החיוב לפי המלאי.` : '',
+      r.waiting > 0 ? `${r.waiting === 1 ? 'חשבונית אחת' : `${r.waiting} חשבוניות`} על ${MONTHS[r.month]} עוד לא נרשמו – הן עוד לא בחובה לסוכנים.` : '',
       r.openReturns > 0 ? `ב-${r.openReturns === 1 ? 'סחורה אחת' : `${r.openReturns} קבלות סחורה`} ההחזרות עוד לא נרשמו.` : '',
     ].filter(Boolean);
     const ok = await ask({
@@ -101,6 +103,14 @@ export function Report() {
 
   const maxWeek = r ? Math.max(1, ...r.weeks.map((w) => Math.abs(w.net))) : 1;
   const maxMethod = r ? Math.max(1, ...r.bySource.flatMap((s) => s.methods.map((m) => m.total))) : 1;
+  // cash, credit… of the whole month (both places together)
+  const allMethods: MethodTotal[] = [];
+  for (const s of r?.bySource ?? [])
+    for (const m of s.methods) {
+      const x = allMethods.find((a) => a.name === m.name);
+      if (x) x.total = Math.round((x.total + m.total) * 100) / 100;
+      else allMethods.push({ id: allMethods.length + 1, name: m.name, total: m.total });
+    }
   const empty = r && r.income === 0 && r.received === 0 && r.credit === 0 && r.invoiced === 0 && r.expenses === 0 && r.paid === 0;
   const mk = monthKey(new Date(ym.y, ym.m, 1));
 
@@ -143,15 +153,15 @@ export function Report() {
               <div className="big">{shekel(r.net)}</div>
               <div className="note">
                 {r.waiting > 0
-                  ? `עוד לא סופי · ${r.waiting === 1 ? 'סוכן אחד' : `${r.waiting} סוכנים`} בלי חשבונית – אצלם לפי המלאי`
+                  ? `עוד לא סופי · ${r.waiting === 1 ? 'חסרה חשבונית אחת' : `חסרות ${r.waiting} חשבוניות`} – נכנס רק מה שנרשם`
                   : r.openReturns > 0
                     ? 'לפני חלק מההחזרות · יתעדכן אחרי שירשמו'
-                    : 'הכנסות ברוטו פחות חיובי הסוכנים והוצאות · לא משנה אם שולם'}
+                    : 'הכנסות ברוטו פחות החובה לסוכנים והוצאות · לא משנה אם שולם'}
               </div>
             </div>
             <div className="minis">
               <div className="mini"><span>הכנסות ברוטו</span><b>{shekel(r.income)}</b></div>
-              <div className="mini"><span>חיובי סוכנים</span><b>{shekel(r.charges)}</b></div>
+              <div className="mini"><span>חובה לסוכנים</span><b>{shekel(r.charges)}</b></div>
               <div className="mini"><span>הוצאות</span><b>{shekel(r.expenses)}</b></div>
             </div>
           </section>
@@ -172,7 +182,7 @@ export function Report() {
                     {r.waiting > 0 && r.mismatches > 0 ? ' · ' : ''}
                     {r.mismatches > 0 ? `${r.mismatches} לא תואמות` : ''}
                   </b>
-                  <span>{r.waiting > 0 ? 'עד שיגיעו – החיוב לפי המלאי' : 'יש הפרש בין החשבונית למלאי'}</span>
+                  <span>{r.waiting > 0 ? 'עד שיירשמו – החובה לסוכן לא כוללת אותן' : 'יש הפרש בין החשבונית למלאי'}</span>
                 </span>
                 <span className="go">{r.mismatches ? 'לבדיקה' : 'לרישום'}</span>
               </Link>
@@ -215,6 +225,8 @@ export function Report() {
           {r.bySource.length > 0 && (
             <section className="card rsec">
               <h2>הכנסות</h2>
+              <span className="lbl" style={{ fontWeight: 800 }}>מזומן ואשראי – כל החודש</span>
+              <MethodBar methods={allMethods} total={r.income} />
               {r.bySource.map((s) => (
                 <div key={s.id} className="src-sum">
                   <div className="kv">
@@ -247,7 +259,7 @@ export function Report() {
               <div className="h2-row"><h2>לפי סוכן</h2><small>בש״ח</small></div>
               {(r.agents.length > 6 || r.products.length > 10) && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן או מוצר" />}
               <div className="tbl">
-                <div className="tr th"><span>סוכן</span><span>מלאי</span><span>חשבונית</span><span>חיוב</span><span>שולם</span></div>
+                <div className="tr th"><span>סוכן</span><span>מלאי</span><span>חשבונית</span><span>חובה</span><span>שולם</span></div>
                 {r.agents.filter((a) => matches(a.name, q)).map((a) => (
                   <Link key={a.id} to={a.state === 'empty' ? `/agent/${a.id}` : `/check/${a.id}/${mk}`} className="tr">
                     <span className="nm"><i style={{ background: a.color ?? 'var(--primary)' }} />{a.name}</span>
@@ -268,7 +280,7 @@ export function Report() {
                 </div>
               </div>
               <p className="hint" style={{ margin: '6px 0 0' }}>
-                חיוב = החשבונית של החודש, ואם עוד אין – לפי המלאי · ✓ תואם · ≠ יש הפרש
+                חובה = החשבוניות שנרשמו על החודש · ✓ תואם למלאי · ≠ יש הפרש
               </p>
             </section>
           )}
@@ -333,16 +345,16 @@ function PrintReport({ r }: { r: MonthReport }) {
         <div>
           <h1>דוח חודשי – {MONTHS[r.month]} {r.year}</h1>
           <p>{r.hebMonths} · הופק {today().toLocaleDateString('he-IL')} ({hebDate(today())})</p>
-          {r.waiting > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: {r.waiting} חשבוניות על החודש עוד לא נרשמו – אצל הסוכנים האלה החיוב לפי המלאי, והסכום עוד ישתנה.</p>}
+          {r.waiting > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: {r.waiting} חשבוניות על החודש עוד לא נרשמו – הן עוד לא בחובה לסוכנים, והסכום עוד ישתנה.</p>}
           {r.openReturns > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: ב-{r.openReturns} קבלות סחורה ההחזרות עוד לא נרשמו, הסכום עוד ישתנה.</p>}
         </div>
       </div>
       <table className="p-kpi">
         <tbody>
           <tr><td>הכנסות ברוטו</td><td>{money(r.income)}</td><td>מלאי (סחורה פחות החזרות)</td><td>{money(r.expected)}</td></tr>
-          <tr><td>חיובי סוכנים</td><td>{money(r.charges)}</td><td>חשבוניות</td><td>{money(r.invoiced)}</td></tr>
+          <tr><td>חובה לסוכנים</td><td>{money(r.charges)}</td><td>חשבוניות</td><td>{money(r.invoiced)}</td></tr>
           <tr><td>הוצאות (קבועות ופועלים)</td><td>{money(r.expenses)}</td><td>שולם לסוכנים</td><td>{money(r.paid)}</td></tr>
-          <tr className="net"><td>נשאר בקופה</td><td colSpan={3}>{money(r.net)} <small style={{ fontWeight: 400, fontSize: 12, color: '#6b5847' }}>(הכנסות − חיובי סוכנים − הוצאות · חיוב = החשבונית, ואם אין – לפי המלאי)</small></td></tr>
+          <tr className="net"><td>נשאר בקופה</td><td colSpan={3}>{money(r.net)} <small style={{ fontWeight: 400, fontSize: 12, color: '#6b5847' }}>(הכנסות − חובה לסוכנים − הוצאות · חובה = החשבוניות שנרשמו)</small></td></tr>
         </tbody>
       </table>
       <h2>לפי שבועות</h2>
@@ -378,7 +390,7 @@ function PrintReport({ r }: { r: MonthReport }) {
         <>
           <h2>לפי סוכן</h2>
           <table>
-            <thead><tr><th>סוכן</th><th>סחורה</th><th>החזרות</th><th>לפי המלאי</th><th>חשבונית</th><th>חיוב</th><th>שולם החודש</th></tr></thead>
+            <thead><tr><th>סוכן</th><th>סחורה</th><th>החזרות</th><th>לפי המלאי</th><th>חשבונית</th><th>חובה</th><th>שולם על החודש</th></tr></thead>
             <tbody>
               {r.agents.map((a) => (
                 <tr key={a.id}>

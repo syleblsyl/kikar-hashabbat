@@ -473,6 +473,65 @@ export async function dayTotalsBySource(date: string): Promise<Map<number, { nig
   return map;
 }
 
+/* ---------- cash and credit: income by payment method ---------- */
+
+export type MethodTotal = { id: number; name: string; total: number };
+export type IncomeSplit = {
+  total: number;
+  /** in total, by payment method (cash, credit…) */
+  methods: MethodTotal[];
+  /** per place, by payment method */
+  sources: { id: number; name: string; total: number; methods: MethodTotal[] }[];
+};
+
+/** Income by payment method, in total and per place. Without dates – everything ever recorded. */
+export async function incomeSplit(from?: string, to?: string): Promise<IncomeSplit> {
+  const ranged = !!from && !!to;
+  const [sources, all, rows] = await Promise.all([
+    query<Source>('SELECT * FROM income_sources ORDER BY sort, id'),
+    query<Method>('SELECT * FROM payment_methods ORDER BY sort, id'),
+    query<{ source_id: number; method_id: number; total: number }>(
+      `SELECT source_id, method_id, SUM(amount) AS total FROM daily_income ${ranged ? 'WHERE date BETWEEN ? AND ?' : ''} GROUP BY source_id, method_id`,
+      ranged ? [from, to] : [],
+    ),
+  ]);
+  const sumOf = (pred: (r: { source_id: number; method_id: number }) => boolean) =>
+    Math.round(rows.filter(pred).reduce((t, r) => t + Number(r.total), 0) * 100) / 100;
+  // the active methods, plus hidden ones that have money in the period
+  const shown = all.filter((m) => m.active || sumOf((r) => Number(r.method_id) === Number(m.id)) !== 0);
+  const byMethod = (pred: (r: { source_id: number; method_id: number }) => boolean): MethodTotal[] =>
+    shown.map((m) => ({ id: Number(m.id), name: m.name, total: sumOf((r) => pred(r) && Number(r.method_id) === Number(m.id)) }));
+  return {
+    total: sumOf(() => true),
+    methods: byMethod(() => true),
+    sources: sources
+      .map((s) => ({
+        id: Number(s.id),
+        name: s.name,
+        total: sumOf((r) => Number(r.source_id) === Number(s.id)),
+        methods: byMethod((r) => Number(r.source_id) === Number(s.id)),
+        active: s.active,
+      }))
+      .filter((s) => s.total !== 0 || s.active)
+      .map(({ active: _a, ...s }) => s),
+  };
+}
+
+/** Month by month (newest first): income by payment method id. */
+export async function incomeMonthsByMethod(): Promise<{ month: string; total: number; methods: Map<number, number> }[]> {
+  const rows = await query<{ month: string; method_id: number; total: number }>(
+    'SELECT substr(date, 1, 7) AS month, method_id, SUM(amount) AS total FROM daily_income GROUP BY substr(date, 1, 7), method_id',
+  );
+  const map = new Map<string, { month: string; total: number; methods: Map<number, number> }>();
+  for (const r of rows) {
+    const m = map.get(r.month) ?? { month: r.month, total: 0, methods: new Map<number, number>() };
+    m.total += Number(r.total);
+    m.methods.set(Number(r.method_id), (m.methods.get(Number(r.method_id)) ?? 0) + Number(r.total));
+    map.set(r.month, m);
+  }
+  return [...map.values()].filter((m) => Math.abs(m.total) > 0.004).sort((a, b) => (a.month < b.month ? 1 : -1));
+}
+
 /* ======================= expenses ======================= */
 
 export type ExpenseType = { id: number; name: string; sort: number; active: number };
@@ -600,15 +659,7 @@ export async function stopRecurring(id: number, fromMonth: string) {
 /* ======================= agent payments ======================= */
 // Balances, the money ledger, statements and payment confirmations are in billing.ts.
 
-/** Records a payment to the agent and returns its id (for the payment confirmation). */
-export async function addPayment(agentId: number, date: string, amount: number, method: string, note: string): Promise<number> {
-  const res = await run('INSERT INTO agent_payments (agent_id, date, amount, method, note) VALUES (?, ?, ?, ?, ?)', [agentId, date, amount, method, note.trim()]);
-  return res.lastId;
-}
-
-export async function deletePayment(id: number) {
-  await run('DELETE FROM agent_payments WHERE id = ?', [id]);
-}
+// Rows of חובה and זכות (invoices, credits, payments) are saved with saveAgentRow in billing.ts.
 
 /* ======================= helpers for screens ======================= */
 

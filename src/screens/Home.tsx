@@ -43,7 +43,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
     let alive = true;
     (async () => {
       await ensureRecurring().catch(() => undefined);
-      const [s, a, p, lm, seen] = await Promise.all([monthSummary(ym.y, ym.m), agentsForMonth(ym.y, ym.m), pendingReturns(), monthAgents(prevKey), getSetting('intro_1015')]);
+      const [s, a, p, lm, seen] = await Promise.all([monthSummary(ym.y, ym.m), agentsForMonth(ym.y, ym.m), pendingReturns(), monthAgents(prevKey), getSetting('intro_1018')]);
       if (!alive) return;
       setSum(s);
       setAgents(a);
@@ -57,12 +57,11 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
   }, [ym.y, ym.m]);
 
   const tiles = [
+    { to: '/agents', icon: 'users', label: 'סוכנים', sub: 'חשבוניות ותשלומים – חובה וזכות', bg: 'var(--blue-soft)', fg: 'var(--blue)', wide: true },
+    { to: `/income?date=${incomeDate}`, icon: 'cash', label: 'הכנסות יומיות', sub: 'חנות ומקווה', bg: 'var(--green-soft)', fg: 'var(--green)' },
+    { to: `/expense?month=${ymKey(ym)}`, icon: 'sheet', label: 'הוצאות', sub: 'קבועות ופועלים', bg: 'var(--red-soft)', fg: 'var(--red)' },
     { to: `/stock?month=${ymKey(ym)}`, icon: 'truck', label: 'מלאי', sub: 'סחורה שהגיעה', bg: 'var(--primary-soft)', fg: 'var(--primary)' },
     { to: '/returns', icon: 'undo', label: 'החזרות', sub: 'מה שהסוכן לקח', bg: 'var(--gold-soft)', fg: 'var(--gold-ink)' },
-    { to: `/income?date=${incomeDate}`, icon: 'cash', label: 'הכנסות יומיות', sub: 'חנות ומקווה', bg: 'var(--green-soft)', fg: 'var(--green)' },
-    { to: '/payment', icon: 'wallet', label: 'תשלום לסוכן', sub: 'כסף ששילמתי', bg: 'var(--blue-soft)', fg: 'var(--blue)' },
-    { to: `/expense?month=${ymKey(ym)}`, icon: 'sheet', label: 'הוצאות', sub: 'קבועות ופועלים', bg: 'var(--red-soft)', fg: 'var(--red)' },
-    { to: '/invoices', icon: 'receipt', label: 'חשבוניות', sub: 'פעם בחודש מכל סוכן', bg: 'var(--chip)', fg: 'var(--ink2)' },
   ];
   const shown = agents.filter((a) => matches(a.name, q));
   const owedTotal = agents.reduce((s, a) => s + Math.max(0, a.balance), 0);
@@ -71,31 +70,29 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
   const bad = lastMonth.filter((r) => r.state === 'mismatch');
   const retAgents = [...new Set(pending.map((p) => p.agent))];
   const mk = ymKey(ym);
-  const estimate = !!sum && (sum.waiting > 0 || Math.abs(sum.byStock) > 0.004);
+  // agents are counted only by the חובה rows written for the month; a month still missing invoices is not final
+  const estimate = !!sum && sum.waiting > 0;
   const heroNote = !sum
     ? ''
     : !estimate
-      ? sum.goodsCost !== 0
-        ? 'הכנסות ברוטו פחות חשבוניות הסוכנים והוצאות · סופי ✓'
-        : 'הכנסות ברוטו פחות חיובי הסוכנים והוצאות'
-      : Math.abs(sum.byInvoice) < 0.004 && sum.mismatches === 0
-        ? isCurrent
-          ? `חיובי הסוכנים לפי המלאי. החשבוניות על ${monthName(mk)} יגיעו ב${monthName(addMonthKey(mk, 1))}, ואז המספר יתעדכן.`
-          : `חיובי הסוכנים לפי המלאי – עוד לא נרשמו חשבוניות על ${monthName(mk)}.`
-        : `${sum.waiting === 1 ? 'סוכן אחד עוד בלי חשבונית' : `${sum.waiting} סוכנים עוד בלי חשבונית`} – אצלם החיוב לפי המלאי (${shekel(sum.byStock)}).`;
+      ? 'הכנסות ברוטו פחות חובה לסוכנים והוצאות'
+      : isCurrent && Math.abs(sum.goodsCost) < 0.004
+        ? `החשבוניות על ${monthName(mk)} יגיעו ב${monthName(addMonthKey(mk, 1))} – עד שנרשמות, הסוכנים לא בחישוב.`
+        : `${sum.waiting === 1 ? 'לסוכן אחד' : `ל-${sum.waiting} סוכנים`} עוד אין חשבונית על ${monthName(mk)} – הם עוד לא בחישוב.`;
 
   async function explain() {
     await ask({
-      title: 'חדש: מלאי וחשבוניות',
+      title: 'חדש: חובה וזכות אצל כל סוכן',
       text:
-        'מלאי – מה שהגיע מהסוכן במשך החודש, ומה שהוא לקח בחזרה.\n\n' +
-        'חשבונית – הסכום שהסוכן שולח פעם בחודש, על החודש הקודם. היא קובעת כמה אני חייב.\n\n' +
-        'בדיקה – האפליקציה משווה ביניהם, ואם יש הפרש מראה למה.\n\n' +
-        'עד שהחשבונית מגיעה – החוב והקופה מחושבים לפי המלאי.',
+        'נכנסים ל"סוכנים", מחפשים את הסוכן ונכנסים אליו.\n\n' +
+        'חובה – חשבונית: כמה אני חייב לו, ולאיזה חודש.\n\n' +
+        'זכות – תשלום שלי לסוכן, או זיכוי שהוא נתן לי.\n\n' +
+        'החוב לסוכן = חובה פחות זכות, רק לפי השורות.\n\n' +
+        'המלאי לא נכנס לחוב – הוא רק לבדיקה שהחשבונית נכונה.',
       ok: 'הבנתי',
       cancel: 'סגירה',
     });
-    await setSetting('intro_1015', '1');
+    await setSetting('intro_1018', '1');
     setIntro(false);
   }
 
@@ -150,9 +147,9 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
             <b>{sum ? shekel(sum.income) : '…'}</b>
           </Link>
           <Link to={`/invoices?month=${mk}`} className="mini" style={{ color: '#fff' }}>
-            <span>חיובי סוכנים</span>
+            <span>חובה לסוכנים</span>
             <b>{sum ? shekel(sum.goodsCost) : '…'}</b>
-            {estimate && <small>{Math.abs(sum!.byInvoice) < 0.004 ? 'לפי מלאי' : 'חלק לפי מלאי'}</small>}
+            {estimate && <small>חסרות {sum!.waiting}</small>}
           </Link>
           <Link to={`/expense?month=${ymKey(ym)}`} className="mini" style={{ color: '#fff' }}>
             <span>הוצאות</span>
@@ -176,7 +173,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
         <button type="button" className="banner green" onClick={explain} style={{ width: 'calc(100% - 32px)', textAlign: 'right', font: 'inherit' }}>
           <span className="ic"><Icon name="info" /></span>
           <span className="txt">
-            <b>חדש: מלאי וחשבוניות</b>
+            <b>חדש: חובה וזכות אצל כל סוכן</b>
             <span>הסבר קצר איך זה עובד עכשיו</span>
           </span>
           <span className="go">הסבר</span>
@@ -227,7 +224,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
         <h2>מה רושמים עכשיו?</h2>
         <div className="tiles">
           {tiles.map((t) => (
-            <Link key={t.label} to={t.to} className="tile">
+            <Link key={t.label} to={t.to} className={`tile${t.wide ? ' wide' : ''}`}>
               <span className="ic" style={{ background: t.bg, color: t.fg }}>
                 <Icon name={t.icon} size={24} />
               </span>

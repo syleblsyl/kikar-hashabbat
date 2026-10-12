@@ -6,7 +6,6 @@ import { dataVersion, query, run } from './sqlite';
 import {
   balancesOf,
   buildLedger,
-  isStock,
   buildMonths,
   checkOf,
   creditMonth,
@@ -21,7 +20,7 @@ import {
   type PriceChange,
   type StockEntry,
 } from './money';
-import { iso, today, monthOf, monthFirst, monthLast } from '../lib/dates';
+import { addMonthKey, iso, today, monthOf, monthFirst, monthLast } from '../lib/dates';
 
 export type { AgentMonth, CheckState, Hint, InvoiceRec, LedgerEntry, StockEntry } from './money';
 
@@ -94,11 +93,12 @@ export async function loadInvoices(opts: { agentId?: number; month?: string } = 
 }
 
 export async function loadPayments(agentId?: number): Promise<PaymentRec[]> {
-  const rows = await query<{ id: number; agent_id: number; date: string; amount: number; method: string | null; note: string | null }>(
-    `SELECT id, agent_id, date, amount, method, note FROM agent_payments ${agentId ? 'WHERE agent_id = ?' : ''} ORDER BY date, id`,
+  const rows = await query<{ id: number; agent_id: number; month: string; date: string; amount: number; method: string | null; note: string | null }>(
+    `SELECT id, agent_id, COALESCE(month, substr(date, 1, 7)) AS month, date, amount, method, note
+       FROM agent_payments ${agentId ? 'WHERE agent_id = ?' : ''} ORDER BY date, id`,
     agentId ? [agentId] : [],
   );
-  return rows.map((r) => ({ id: Number(r.id), agentId: Number(r.agent_id), date: r.date, amount: Number(r.amount), method: r.method, note: r.note }));
+  return rows.map((r) => ({ id: Number(r.id), agentId: Number(r.agent_id), month: r.month, date: r.date, amount: Number(r.amount), method: r.method, note: r.note }));
 }
 
 /** Every agent-month that has goods, credits or an invoice. (All agents: cached until the next write.) */
@@ -310,111 +310,124 @@ export async function stateOf(agentId: number, month: string): Promise<{ m: Agen
   return { m, ...checkOf(m ?? undefined, checks.get(`${agentId}|${month}`)) };
 }
 
-/* ---------- ledger, statement, payment confirmation ---------- */
+/* ---------- the agent's card: rows by month ---------- */
 
-/** Money: invoices, the stock of months without an invoice yet, payments. Newest first. */
+/** The agent's rows (חובה: invoices; זכות: credits from him and my payments), newest first. */
 export async function agentLedger(agentId: number): Promise<LedgerEntry[]> {
-  const [stock, invoices, pays] = await Promise.all([loadStock(agentId), loadInvoices({ agentId }), loadPayments(agentId)]);
-  return buildLedger(buildMonths(stock, invoices), stock, invoices, pays).reverse();
+  const [invoices, pays] = await Promise.all([loadInvoices({ agentId }), loadPayments(agentId)]);
+  return buildLedger(invoices, pays).reverse();
 }
 
-export type DocLine = { name: string; qty: number; unit_cost: number };
+export type RowKind = 'invoice' | 'credit' | 'payment';
+
+/**
+ * Adds or changes one row of the agent's card. חובה and זיכוי are kept as invoices (a credit is a negative one),
+ * a payment as a payment. A row that changes its kind moves between the two.
+ */
+export async function saveAgentRow(r: {
+  agentId: number;
+  kind: RowKind;
+  month: string;
+  amount: number;
+  number: string;
+  method: string;
+  note: string;
+  /** the row being changed */
+  was?: { kind: RowKind; id: number; date: string };
+}): Promise<{ kind: RowKind; id: number }> {
+  const date = r.was?.date ?? iso(today());
+  const amount = Math.round(Math.abs(r.amount) * 100) / 100;
+  const asInvoice = r.kind !== 'payment';
+  const wasInvoice = r.was ? r.was.kind !== 'payment' : asInvoice;
+  // the kind moved from an invoice to a payment or back: remove the old row first
+  if (r.was && asInvoice !== wasInvoice) {
+    await run(wasInvoice ? 'DELETE FROM agent_invoices WHERE id = ?' : 'DELETE FROM agent_payments WHERE id = ?', [r.was.id]);
+  }
+  const keep = r.was && asInvoice === wasInvoice ? r.was.id : undefined;
+  if (asInvoice) {
+    const id = await saveAgentInvoice({ id: keep, agentId: r.agentId, month: r.month, date, amount: r.kind === 'credit' ? -amount : amount, number: r.number, note: r.note });
+    return { kind: r.kind, id };
+  }
+  if (keep) {
+    await run('UPDATE agent_payments SET agent_id = ?, month = ?, amount = ?, method = ?, note = ? WHERE id = ?', [r.agentId, r.month, amount, r.method || null, r.note.trim(), keep]);
+    return { kind: 'payment', id: keep };
+  }
+  const res = await run('INSERT INTO agent_payments (agent_id, date, month, amount, method, note) VALUES (?, ?, ?, ?, ?, ?)', [
+    r.agentId,
+    date,
+    r.month,
+    amount,
+    r.method || null,
+    r.note.trim(),
+  ]);
+  return { kind: 'payment', id: res.lastId };
+}
+
+export async function deleteAgentRow(kind: RowKind, id: number) {
+  await run(kind === 'payment' ? 'DELETE FROM agent_payments WHERE id = ?' : 'DELETE FROM agent_invoices WHERE id = ?', [id]);
+}
+
 export type StatementRange = 'since-payment' | 'month' | '3months' | 'all';
 export type StatementRow = LedgerEntry & {
-  /** invoices: my stock for that month, to compare */
+  /** חובה rows: my stock for that month, to compare */
   stock: { goods: number; credit: number; expected: number } | null;
   state?: CheckState;
-  /** goods / returns recorded per product */
-  lines: DocLine[];
 };
 export type Statement = {
   range: StatementRange;
-  /** first day shown, null = from the beginning */
+  /** first month shown, null = from the beginning */
   from: string | null;
   opening: number;
   rows: StatementRow[];
   closing: number;
+  /** חובה shown */
   invoiced: number;
-  /** goods − returns shown that no invoice covers yet */
-  estimated: number;
+  /** credits from the agent shown */
+  credits: number;
+  /** payments shown */
   paid: number;
-  /** months in the closing balance still counted by stock (no invoice yet) */
-  estimateMonths: string[];
-  /** of the closing balance, what is still by stock */
-  unbilled: number;
-  /** some of that stock still waits for its returns */
-  openReturns: boolean;
-  lastPayment: { date: string; amount: number } | null;
+  lastPayment: { date: string; month: string; amount: number } | null;
 };
-
-async function linesOf(ids: number[]): Promise<Map<number, { name: string; qty_received: number; qty_returned: number; unit_cost: number }[]>> {
-  const map = new Map<number, { name: string; qty_received: number; qty_returned: number; unit_cost: number }[]>();
-  if (ids.length === 0) return map;
-  const rows = await query<{ delivery_id: number; name: string; qty_received: number; qty_returned: number; unit_cost: number }>(
-    `SELECT l.delivery_id, p.name, l.qty_received, l.qty_returned, l.unit_cost
-       FROM delivery_lines l JOIN products p ON p.id = l.product_id
-      WHERE l.delivery_id IN (${ids.map(() => '?').join(',')}) ORDER BY p.name`,
-    ids,
-  );
-  for (const r of rows) {
-    const list = map.get(Number(r.delivery_id)) ?? [];
-    list.push({ name: r.name, qty_received: Number(r.qty_received), qty_returned: Number(r.qty_returned), unit_cost: Number(r.unit_cost) });
-    map.set(Number(r.delivery_id), list);
-  }
-  return map;
-}
 
 /** Account statement for one agent, oldest first, from the chosen point until today. */
 export async function agentStatement(agentId: number, range: StatementRange): Promise<Statement> {
   const [stock, invoices, pays, checks] = await Promise.all([loadStock(agentId), loadInvoices({ agentId }), loadPayments(agentId), loadChecks({ agentId })]);
   const months = buildMonths(stock, invoices);
-  const all = buildLedger(months, stock, invoices, pays);
+  const all = buildLedger(invoices, pays);
   const lastPayIdx = all.map((e) => e.kind).lastIndexOf('payment');
-  const t = today();
+  const now = monthOf(iso(today()));
   let start = 0;
   let from: string | null = null;
   if (range === 'since-payment' && lastPayIdx >= 0) {
     start = lastPayIdx + 1;
-    from = all[lastPayIdx].date;
+    from = all[lastPayIdx].month;
   } else if (range === 'month' || range === '3months') {
-    from = iso(new Date(t.getFullYear(), t.getMonth() - (range === 'month' ? 0 : 2), 1));
-    start = all.findIndex((e) => e.date >= from!);
+    from = range === 'month' ? now : addMonthKey(now, -2);
+    start = all.findIndex((e) => e.month >= from!);
     if (start < 0) start = all.length;
   }
   const shown = all.slice(start);
   const byMonth = new Map(months.map((m) => [m.month, m]));
-  const lines = await linesOf([...new Set(shown.filter(isStock).map((e) => e.id))]);
   const rows: StatementRow[] = shown.map((e) => {
-    const m = e.kind === 'invoice' && e.month ? byMonth.get(e.month) : undefined;
-    const ls = isStock(e) ? lines.get(e.id) ?? [] : [];
+    const m = e.kind === 'invoice' ? byMonth.get(e.month) : undefined;
     return {
       ...e,
-      stock: m && (m.stockCount > 0 || m.creditCount > 0) ? { goods: m.goods, credit: m.credit, expected: m.expected } : null,
+      stock: m && (m.stockCount > 0 || m.creditCount > 0) ? { goods: m.goods, credit: m.credit, expected: m.compare } : null,
       state: m ? checkOf(m, checks.get(`${agentId}|${m.month}`)).state : undefined,
-      lines:
-        e.kind === 'goods'
-          ? ls.filter((l) => l.qty_received > 0).map((l) => ({ name: l.name, qty: l.qty_received, unit_cost: l.unit_cost }))
-          : e.kind === 'returns'
-            ? ls.filter((l) => l.qty_returned > 0).map((l) => ({ name: l.name, qty: l.qty_returned, unit_cost: l.unit_cost }))
-            : [],
     };
   });
+  const sum = (k: LedgerEntry['kind']) => Math.round(shown.filter((e) => e.kind === k).reduce((s, e) => s + Math.abs(e.amount), 0) * 100) / 100;
   const last = lastPayIdx >= 0 ? all[lastPayIdx] : null;
-  const end = all.length ? all[all.length - 1] : null;
-  const unbilledEntries = all.filter(isStock);
   return {
     range,
     from,
     opening: start > 0 ? all[start - 1].balance : 0,
     rows,
-    closing: end?.balance ?? 0,
-    invoiced: shown.filter((e) => e.kind === 'invoice').reduce((s, e) => s + e.amount, 0),
-    estimated: Math.round(shown.filter(isStock).reduce((s, e) => s + e.amount, 0) * 100) / 100,
-    paid: shown.filter((e) => e.kind === 'payment').reduce((s, e) => s - e.amount, 0),
-    estimateMonths: [...new Set(unbilledEntries.map((e) => e.month!))].sort(),
-    unbilled: Math.round(((end?.balance ?? 0) - (end?.billed ?? 0)) * 100) / 100,
-    openReturns: unbilledEntries.some((e) => e.pendingReturns),
-    lastPayment: last ? { date: last.date, amount: -last.amount } : null,
+    closing: all.length ? all[all.length - 1].balance : 0,
+    invoiced: sum('invoice'),
+    credits: sum('credit'),
+    paid: sum('payment'),
+    lastPayment: last ? { date: last.date, month: last.month, amount: -last.amount } : null,
   };
 }
 
@@ -422,14 +435,13 @@ export type PaymentConfirmation = {
   id: number;
   agentId: number;
   date: string;
+  month: string;
   amount: number;
   method: string | null;
   note: string | null;
-  /** what I owed the agent just before / just after this payment, stock of un-invoiced months included */
+  /** what I owed the agent just before / just after this payment (negative = he owes me) */
   before: number;
   after: number;
-  /** of `after`, what is still by stock (no invoice yet) */
-  unbilledAfter: number;
   /** what I owe the agent today, after everything recorded since */
   now: number;
 };
@@ -444,12 +456,12 @@ export async function paymentConfirmation(paymentId: number): Promise<PaymentCon
     id: paymentId,
     agentId: Number(p.agent_id),
     date: e.date,
+    month: e.month,
     amount: -e.amount,
     method: e.method ?? null,
     note: e.note ?? null,
     before: Math.round((e.balance - e.amount) * 100) / 100,
     after: e.balance,
-    unbilledAfter: Math.round((e.balance - e.billed) * 100) / 100,
     now: ledger[0]?.balance ?? 0,
   };
 }

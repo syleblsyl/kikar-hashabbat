@@ -3,27 +3,48 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ask } from '../components/Dialog';
 import { useLeaveGuard } from '../components/guard';
 import { Icon } from '../components/Icon';
+import { MonthBar, parseYM, ymKey, type YM } from '../components/MonthBar';
 import { matches, SearchBox } from '../components/SearchBox';
 import { toast } from '../components/Toast';
 import { getAgent, productsOfAgent, unhideAgent, type Agent, type Product } from '../db/catalog';
-import { addPayment, deletePayment, pendingReturns, type StockRow } from '../db/ops';
-import { agentLedger, agentMonthsWithState, balances, type AgentMonth, type CheckState, type LedgerEntry } from '../db/billing';
-import { CheckPill, checkLabel } from '../components/CheckPill';
-import { DAY_NAMES, DAY_SHORT, dm, fromIso, iso, monthName, startOfWeek, today } from '../lib/dates';
+import { pendingReturns, type StockRow } from '../db/ops';
+import { agentLedger, agentMonthsWithState, balances, deleteAgentRow, saveAgentRow, type AgentMonth, type CheckState, type LedgerEntry, type RowKind } from '../db/billing';
+import { CheckPill } from '../components/CheckPill';
+import { addMonthKey, DAY_NAMES, dm, iso, monthName, startOfWeek, thisMonthKey, today } from '../lib/dates';
 import { parseAmountStrict, products as productsLabel, shekelCents, shekelSmart } from '../lib/money';
 import { initialOf } from './Agents';
 import { useBack } from '../components/useBack';
 import { myBalanceWords } from '../components/AgentDocs';
 import { waLink } from '../lib/share';
 
-const PAY_METHODS = ['מזומן', 'העברה', 'צ׳ק', 'אחר'];
+const PAY_METHODS = ['מזומן', 'העברה', 'צ׳ק', 'אשראי'];
 
+type Side = 'debit' | 'credit';
+type Form = {
+  side: Side;
+  /** a זכות row: my payment, or a credit the agent gave */
+  creditKind: 'payment' | 'credit';
+  month: string;
+  amount: string;
+  number: string;
+  method: string;
+  note: string;
+  /** the row being changed */
+  was?: { kind: RowKind; id: number; date: string };
+};
 
-function fmtDate(s: string) {
-  const d = fromIso(s);
-  return `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()}`;
+const kindOf = (f: Form): RowKind => (f.side === 'debit' ? 'invoice' : f.creditKind);
+
+function newForm(side: Side, creditKind: 'payment' | 'credit' = 'payment', forMonth?: string): Form {
+  // an invoice usually comes for last month; a payment is written on this month
+  const month = forMonth ?? (side === 'debit' ? addMonthKey(thisMonthKey(), -1) : thisMonthKey());
+  return { side, creditKind, month, amount: '', number: '', method: '', note: '' };
 }
 
+const rowTitle = (e: LedgerEntry) =>
+  e.kind === 'invoice' ? `חשבונית${e.number ? ` מס׳ ${e.number}` : ''}` : e.kind === 'credit' ? `זיכוי מהסוכן${e.number ? ` מס׳ ${e.number}` : ''}` : `תשלום${e.method ? ` · ${e.method}` : ''}`;
+
+/** The agent's card: what I owe him, and his rows by month – חובה (invoices) and זכות (payments, credits). */
 export function AgentCard() {
   const { id } = useParams();
   const agentId = Number(id);
@@ -34,21 +55,18 @@ export function AgentCard() {
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [balance, setBalance] = useState(0);
   const [prods, setProds] = useState<Product[]>([]);
-  const [tab, setTab] = useState<'ledger' | 'stock' | 'products'>('ledger');
+  const [tab, setTab] = useState<'rows' | 'stock' | 'products'>('rows');
   const [months, setMonths] = useState<{ m: AgentMonth; state: CheckState; diff: number }[]>([]);
   const [pendingRet, setPendingRet] = useState<StockRow[]>([]);
-  const [payOpen, setPayOpen] = useState(!!params.get('pay'));
-  const [date, setDate] = useState(iso(today()));
-  const [amount, setAmount] = useState('');
-  const [method, setMethod] = useState(PAY_METHODS[0]);
-  const [note, setNote] = useState('');
+  const [form, setForm] = useState<Form | null>(() => (params.get('pay') ? newForm('credit') : params.get('row') === 'invoice' ? newForm('debit') : null));
+  const [formDirty, setFormDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [openPayment, setOpenPayment] = useState<string | null>(null);
+  const [openRow, setOpenRow] = useState<string | null>(null);
   const [prodQ, setProdQ] = useState('');
-  const payRef = useRef<HTMLElement>(null);
+  const formRef = useRef<HTMLElement>(null);
   const amountRef = useRef<HTMLInputElement>(null);
 
-  useLeaveGuard(payOpen && (amount.trim() !== '' || note.trim() !== ''));
+  useLeaveGuard(!!form && formDirty);
 
   async function load() {
     if (!Number.isFinite(agentId) || agentId <= 0) return setAgent(null);
@@ -65,18 +83,49 @@ export function AgentCard() {
     load();
   }, [agentId]);
 
+  // the form opens in view, with the keyboard on the amount
+  const formKey = form ? `${form.was?.kind ?? 'new'}${form.was?.id ?? ''}${form.side}` : '';
   useEffect(() => {
-    if (!payOpen || !agent) return;
+    if (!form || !agent) return;
     const t = setTimeout(() => {
-      payRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       amountRef.current?.focus();
     }, 120);
     return () => clearTimeout(t);
-  }, [payOpen, !!agent]);
+  }, [formKey, !!agent]);
 
-  const parsed = parseAmountStrict(amount);
+  function openForm(f: Form) {
+    setForm(f);
+    setFormDirty(false);
+    setOpenRow(null);
+  }
 
-  async function pay() {
+  function edit(e: LedgerEntry) {
+    openForm({
+      side: e.kind === 'invoice' ? 'debit' : 'credit',
+      creditKind: e.kind === 'credit' ? 'credit' : 'payment',
+      month: e.month,
+      amount: String(Math.abs(e.amount)),
+      number: e.number ?? '',
+      method: e.method ?? '',
+      note: e.note ?? '',
+      was: { kind: e.kind, id: e.id, date: e.date },
+    });
+  }
+
+  function change<K extends keyof Form>(k: K, v: Form[K]) {
+    setForm((f) => (f ? { ...f, [k]: v } : f));
+    setFormDirty(true);
+  }
+
+  const parsed = form ? parseAmountStrict(form.amount) : 0;
+  const sign = form ? (form.side === 'debit' ? 1 : -1) : 0;
+  const wasAmount = form?.was ? ledger.find((e) => e.kind === form.was!.kind && e.id === form.was!.id)?.amount ?? 0 : 0;
+  const after = balance - wasAmount + sign * (parsed ?? 0);
+  const stockOfMonth = form ? months.find((x) => x.m.month === form.month)?.m : undefined;
+
+  async function save() {
+    if (!form || !agent) return;
     if (parsed === null) return toast('הסכום לא תקין. כותבים רק מספר, למשל 1200 או 350.50', 'err');
     if (parsed <= 0) {
       amountRef.current?.focus();
@@ -84,14 +133,18 @@ export function AgentCard() {
     }
     setSaving(true);
     try {
-      const pid = await addPayment(agentId, date, parsed, method, note);
-      setAmount('');
-      setNote('');
-      setPayOpen(false);
-      // the card stays in history (without the open form), the confirmation opens on top of it
-      nav(`/agent/${agentId}`, { replace: true });
-      nav(`/agent/${agentId}/receipt/${pid}?new=1`);
-      return;
+      const kind = kindOf(form);
+      const res = await saveAgentRow({ agentId, kind, month: form.month, amount: parsed, number: form.number, method: form.method, note: form.note, was: form.was });
+      setForm(null);
+      setFormDirty(false);
+      // a new payment: the payment confirmation, to send to the agent
+      if (kind === 'payment' && !form.was) {
+        nav(`/agent/${agentId}`, { replace: true });
+        nav(`/agent/${agentId}/receipt/${res.id}?new=1`);
+        return;
+      }
+      toast(kind === 'invoice' ? `נשמר ✓ חובה על ${monthName(form.month)}` : `נשמר ✓ זכות על ${monthName(form.month)}`);
+      await load();
     } catch (e) {
       console.error(e);
       toast('השמירה נכשלה. נסה שוב.', 'err');
@@ -99,25 +152,19 @@ export function AgentCard() {
     setSaving(false);
   }
 
-  async function removePayment(e: LedgerEntry) {
+  async function remove(e: LedgerEntry) {
     const ok = await ask({
-      title: 'למחוק את התשלום?',
-      text: `${shekelSmart(-e.amount)} מ-${fmtDate(e.date)}${e.method || e.note ? ` (${[e.method, e.note].filter(Boolean).join(' · ')})` : ''}.\nהיתרה לסוכן תעלה בהתאם.`,
-      ok: 'מחיקת התשלום',
+      title: 'למחוק את השורה?',
+      text: `${rowTitle(e)} · ${shekelSmart(Math.abs(e.amount))} · ${monthName(e.month, true)}.\nהיתרה לסוכן תשתנה בהתאם.`,
+      ok: 'מחיקה',
       danger: true,
     });
     if (!ok) return;
-    await deletePayment(e.id);
-    toast('התשלום נמחק');
-    setOpenPayment(null);
+    await deleteAgentRow(e.kind, e.id);
+    toast('השורה נמחקה');
+    setOpenRow(null);
+    if (form?.was?.id === e.id && form.was.kind === e.kind) setForm(null);
     load();
-  }
-
-  function open(e: LedgerEntry) {
-    if (e.kind === 'payment') setOpenPayment((k) => (k === e.key ? null : e.key));
-    else if (e.kind === 'goods') nav(`/stock/${e.id}`);
-    else if (e.kind === 'returns') nav(`/returns?invoice=${e.id}`);
-    else nav(`/check/${agentId}/${e.month}`);
   }
 
   if (agent === undefined) return <header className="bar" />;
@@ -139,15 +186,25 @@ export function AgentCard() {
   }
 
   const color = agent.color ?? 'var(--primary)';
-  const after = balance - (parsed ?? 0);
   const mine = myBalanceWords(balance, agent.name);
   const lastPay = ledger.find((e) => e.kind === 'payment');
   const pendingPast = pendingRet.filter((r) => r.date < iso(startOfWeek(today())));
-  // of what I owe: months that still have no invoice, counted by the stock
-  const billed = ledger[0]?.billed ?? 0;
-  const unbilled = Math.round((balance - billed) * 100) / 100;
-  const estMonths = [...new Set(ledger.filter((e) => e.kind === 'goods' || e.kind === 'returns').map((e) => e.month!))].sort();
   const stateOfMonth = new Map(months.map((x) => [x.m.month, x]));
+  // past months with goods and no invoice yet – the invoice is missing
+  const missing = months.filter((x) => x.state === 'waiting' && x.m.month < thisMonthKey()).map((x) => x.m.month);
+  // rows by month, newest month first (a month with a missing invoice shows even without rows)
+  const groups: { month: string; rows: LedgerEntry[]; debit: number; credit: number }[] = missing.map((month) => ({ month, rows: [], debit: 0, credit: 0 }));
+  for (const e of ledger) {
+    let g = groups.find((x) => x.month === e.month);
+    if (!g) {
+      g = { month: e.month, rows: [], debit: 0, credit: 0 };
+      groups.push(g);
+    }
+    g.rows.push(e);
+    if (e.amount > 0) g.debit += e.amount;
+    else g.credit -= e.amount;
+  }
+  groups.sort((a, b) => (a.month < b.month ? 1 : -1));
 
   return (
     <>
@@ -205,22 +262,24 @@ export function AgentCard() {
             <span />
           )}
           <Link to={`/stock/new?agent=${agentId}`}><Icon name="truck" size={18} /> סחורה</Link>
-          <Link to={`/invoices/new?agent=${agentId}`}><Icon name="receipt" size={18} /> חשבונית</Link>
+          <Link to={`/agent/${agentId}/statement`}><Icon name="file" size={18} /> דוח</Link>
         </div>
       </section>
 
       <section className="card balance">
         <span className="k">{mine.label}</span>
         <span className={`v ${mine.tone}`}>{shekelSmart(Math.abs(balance))}</span>
-        {lastPay && (
-          <span className="hint">
-            תשלום אחרון: {shekelSmart(-lastPay.amount)} ב-{fmtDate(lastPay.date)}
-            {lastPay.method ? ` · ${lastPay.method}` : ''}
+        <span className="hint">חובה פחות זכות, מכל השורות</span>
+        {missing.length > 0 && (
+          <span className="hint miss-hint">
+            {missing.length > 1 ? 'חסרות חשבוניות על' : 'חסרה חשבונית על'} {missing.map((m) => monthName(m)).join(', ')} –{' '}
+            {missing.length > 1 ? 'עד שנרשמות, הן לא בחוב.' : 'עד שנרשמת, היא לא בחוב.'}
           </span>
         )}
-        {unbilled > 0.004 && balance > 0.004 && (
+        {lastPay && (
           <span className="hint">
-            {unbilled < balance - 0.004 ? `מתוך זה ${shekelSmart(unbilled)}` : 'הכול'} לפי המלאי ({estMonths.slice(-3).map((m) => monthName(m)).join(', ')}) – עוד בלי חשבונית, יתעדכן כשתגיע.
+            תשלום אחרון: {shekelSmart(-lastPay.amount)} על {monthName(lastPay.month, true)}
+            {lastPay.method ? ` · ${lastPay.method}` : ''}
           </span>
         )}
         {pendingPast.map((p) => (
@@ -233,157 +292,199 @@ export function AgentCard() {
             <span className="go">לרישום</span>
           </Link>
         ))}
-        <div className="two" style={{ marginTop: 8 }}>
-          <Link to={`/agent/${agentId}/statement`} className="btn small ghost">
-            <Icon name="receipt" size={20} /> דוח חשבון
-          </Link>
-          <button type="button" className="btn small" onClick={() => setPayOpen((o) => !o)} aria-expanded={payOpen}>
-            <Icon name="wallet" size={20} /> תשלום
+        <div className="two side-btns" style={{ marginTop: 8 }}>
+          <button type="button" className="btn small debit" onClick={() => openForm(newForm('debit'))}>
+            <Icon name="plus" size={20} /> חובה
+          </button>
+          <button type="button" className="btn small credit" onClick={() => openForm(newForm('credit'))}>
+            <Icon name="plus" size={20} /> זכות
           </button>
         </div>
+        <span className="hint" style={{ textAlign: 'center' }}>חובה = חשבונית · זכות = תשלום או זיכוי</span>
       </section>
 
-      {payOpen && (
-        <section ref={payRef} className="card box pay-box">
+      {form && (
+        <section ref={formRef} className="card box row-form">
           <div className="pay-head">
-            <h2>תשלום ל{agent.name}</h2>
-            <button type="button" className="x-btn" aria-label="סגירה" onClick={() => setPayOpen(false)}>
+            <h2>{form.was ? 'עריכת שורה' : 'שורה חדשה'}</h2>
+            <button
+              type="button"
+              className="x-btn"
+              aria-label="סגירה"
+              onClick={() => {
+                setForm(null);
+                setFormDirty(false);
+              }}
+            >
               <Icon name="x" size={20} />
             </button>
           </div>
-          <div className="two">
-            <label className="date-chip" style={{ height: 52, fontSize: 17, justifyContent: 'center' }}>
-              <Icon name="calendar" size={20} />
-              {fmtDate(date)}
-              <input type="date" aria-label="תאריך התשלום" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
-            </label>
-            <div className={`money-in${parsed === null ? ' bad' : ''}`}>
-              <input
-                ref={amountRef}
-                inputMode="decimal"
-                enterKeyHint="done"
-                aria-label="סכום התשלום"
-                aria-invalid={parsed === null}
-                placeholder="סכום"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && pay()}
-              />
-              <span>₪</span>
-            </div>
+
+          <div className="segment side-seg" role="radiogroup" aria-label="חובה או זכות">
+            <button type="button" role="radio" aria-checked={form.side === 'debit'} className={`d${form.side === 'debit' ? ' on' : ''}`} onClick={() => change('side', 'debit')}>
+              חובה
+            </button>
+            <button type="button" role="radio" aria-checked={form.side === 'credit'} className={`c${form.side === 'credit' ? ' on' : ''}`} onClick={() => change('side', 'credit')}>
+              זכות
+            </button>
           </div>
-          {(balance > 0.004 || billed > 0.004) && (
-            <div className="chips">
-              {billed > 0.004 && Math.abs(billed - balance) > 0.004 && (
-                <button type="button" className="chip" onClick={() => setAmount(String(Math.round(billed * 100) / 100))}>
-                  לפי החשבוניות · {shekelSmart(billed)}
-                </button>
-              )}
-              {balance > 0.004 && (
-                <button type="button" className="chip" onClick={() => setAmount(String(Math.round(balance * 100) / 100))}>
-                  כל החוב · {shekelSmart(balance)}
-                </button>
-              )}
+          {form.side === 'credit' && (
+            <div className="chips" role="radiogroup" aria-label="סוג הזכות">
+              <button type="button" role="radio" aria-checked={form.creditKind === 'payment'} className={`chip${form.creditKind === 'payment' ? ' on' : ''}`} onClick={() => change('creditKind', 'payment')}>
+                תשלום שלי לסוכן
+              </button>
+              <button type="button" role="radio" aria-checked={form.creditKind === 'credit'} className={`chip${form.creditKind === 'credit' ? ' on' : ''}`} onClick={() => change('creditKind', 'credit')}>
+                זיכוי מהסוכן
+              </button>
             </div>
           )}
-          <div className="chips" role="radiogroup" aria-label="אמצעי תשלום">
-            {PAY_METHODS.map((m) => (
-              <button key={m} type="button" role="radio" aria-checked={method === m} className={`chip${method === m ? ' on' : ''}`} onClick={() => setMethod(m)}>
-                {m}
-              </button>
-            ))}
+
+          <div className={`money-in big${parsed === null ? ' bad' : ''}`}>
+            <input
+              ref={amountRef}
+              inputMode="decimal"
+              enterKeyHint="done"
+              aria-label="סכום"
+              aria-invalid={parsed === null}
+              placeholder="סכום"
+              value={form.amount}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => change('amount', e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && save()}
+            />
+            <span>₪</span>
           </div>
-          <input className="input" style={{ fontSize: 16, fontWeight: 600, height: 48 }} placeholder="הערה (לא חובה)" aria-label="הערה" value={note} onChange={(e) => setNote(e.target.value)} />
           {parsed === null && <div className="field-err">כותבים רק מספר, למשל 1200 או 350.50</div>}
+
+          <span className="lbl">לאיזה חודש?</span>
+          <MonthBar ym={parseYM(form.month)!} onChange={(next: YM) => change('month', ymKey(next))} />
+          {form.side === 'debit' && stockOfMonth && (stockOfMonth.stockCount > 0 || stockOfMonth.creditCount > 0) && (
+            <span className="hint">לפי המלאי של {monthName(form.month)}: {shekelSmart(stockOfMonth.compare)}</span>
+          )}
+
+          {form.side === 'credit' && form.creditKind === 'payment' ? (
+            <div className="chips" role="radiogroup" aria-label="אמצעי תשלום">
+              {PAY_METHODS.map((m) => (
+                <button key={m} type="button" role="radio" aria-checked={form.method === m} className={`chip${form.method === m ? ' on' : ''}`} onClick={() => change('method', form.method === m ? '' : m)}>
+                  {m}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <input
+              className="input"
+              style={{ fontSize: 16, fontWeight: 600, height: 48 }}
+              placeholder={form.side === 'debit' ? 'מספר חשבונית (לא חובה)' : 'מספר זיכוי (לא חובה)'}
+              aria-label="מספר"
+              value={form.number}
+              onChange={(e) => change('number', e.target.value)}
+            />
+          )}
+          <input className="input" style={{ fontSize: 16, fontWeight: 600, height: 48 }} placeholder="הערה (לא חובה)" aria-label="הערה" value={form.note} onChange={(e) => change('note', e.target.value)} />
+
           {(parsed ?? 0) > 0 && (
             <div className="after-row">
-              <span>
-                {after > 0.004 ? 'אחרי התשלום אני עדיין חייב' : after < -0.004 ? `אחרי התשלום יהיה לי פלוס אצל ${agent.name}` : 'אחרי התשלום החשבון מאוזן'}
-              </span>
+              <span>{after > 0.004 ? 'אחרי השורה אני חייב' : after < -0.004 ? `אחרי השורה ${agent.name} חייב לי` : 'אחרי השורה החשבון מאוזן'}</span>
               <b>{shekelSmart(Math.abs(after))}</b>
             </div>
           )}
-          <button type="button" className="btn" onClick={pay} disabled={saving}>{saving ? 'שומר…' : 'שמירת התשלום ואישור'}</button>
-          <Link to={`/agent/${agentId}/statement`} className="hint center-link">
-            רוצה לשלוח לסוכן דוח חשבון לפני התשלום? לחץ כאן
-          </Link>
+          <button type="button" className="btn" onClick={save} disabled={saving}>
+            {saving ? 'שומר…' : form.was ? 'שמירת השינוי' : kindOf(form) === 'payment' ? 'שמירה ואישור תשלום' : 'שמירה'}
+          </button>
         </section>
       )}
 
       <div className="stack" style={{ margin: '12px 16px 0' }}>
         <div className="segment" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === 'ledger'} className={tab === 'ledger' ? 'on' : ''} onClick={() => setTab('ledger')}>תנועות</button>
+          <button type="button" role="tab" aria-selected={tab === 'rows'} className={tab === 'rows' ? 'on' : ''} onClick={() => setTab('rows')}>חובה וזכות</button>
           <button type="button" role="tab" aria-selected={tab === 'stock'} className={tab === 'stock' ? 'on' : ''} onClick={() => setTab('stock')}>מלאי</button>
           <button type="button" role="tab" aria-selected={tab === 'products'} className={tab === 'products' ? 'on' : ''} onClick={() => setTab('products')}>מוצרים ({prods.length})</button>
         </div>
       </div>
 
-      {tab === 'ledger' ? (
-        <section className="card ledger" style={{ margin: '10px 16px 0', padding: '2px 14px' }}>
-          {ledger.length === 0 && <p className="hint" style={{ padding: '14px 0' }}>עוד אין תנועות. אחרי סחורה, חשבוניות ותשלומים הם יופיעו כאן.</p>}
-          {ledger.map((e) => {
-            const d = fromIso(e.date);
-            const st = e.month ? stateOfMonth.get(e.month) : undefined;
-            const title =
-              e.kind === 'invoice' ? `חשבונית על ${monthName(e.month!)}` : e.kind === 'goods' ? 'סחורה' : e.kind === 'returns' ? 'החזרות' : 'תשלום';
-            const sub =
-              e.kind === 'invoice'
-                ? [e.number ? `מס׳ ${e.number}` : '', st ? checkLabel(st.state, st.diff) : ''].filter(Boolean).join(' · ')
-                : e.kind === 'goods'
-                  ? `${e.manual ? 'סכום בלי פירוט' : productsLabel(e.productCount ?? 0)}${e.pendingReturns ? ' · ממתין להחזרות' : ''}`
-                  : e.kind === 'returns'
-                    ? `על סחורה מ-${dm(e.goodsDate ?? e.date)}`
-                    : [e.method, e.note].filter(Boolean).join(' · ') || 'תשלום';
-            const noCredit = e.kind === 'returns' && Math.abs(e.amount) < 0.004;
+      {tab === 'rows' ? (
+        <>
+          {groups.length === 0 && (
+            <div className="card empty-card">
+              <p>עוד אין שורות. כשמגיעה חשבונית – "+ חובה". כשמשלמים – "+ זכות".</p>
+            </div>
+          )}
+          {groups.map((g) => {
+            const st = stateOfMonth.get(g.month);
+            const miss = missing.includes(g.month);
             return (
-              <div key={e.key} className="entry-wrap">
-                <button type="button" className="entry" onClick={() => open(e)} aria-expanded={e.kind === 'payment' ? openPayment === e.key : undefined}>
-                  <span className="when">
-                    <small>{DAY_SHORT[d.getDay()]}</small>
-                    <b>{d.getDate()}.{d.getMonth() + 1}</b>
-                  </span>
-                  <span className="what">
-                    <b>
-                      {title}
-                      {(e.kind === 'goods' || e.kind === 'returns') && <small className="muted-tag">לפי מלאי</small>}
-                    </b>
-                    <span className={e.kind === 'invoice' && st?.state === 'mismatch' ? 'bad-txt' : undefined}>{sub}</span>
-                  </span>
-                  <span className="amt-col">
-                    {noCredit ? (
-                      <span className="amt muted">ללא זיכוי</span>
-                    ) : (
-                      <span className={`amt${e.amount < 0 ? ' minus' : ''}`}>{shekelSmart(e.amount, { signed: true }).replace('-', '−')}</span>
-                    )}
-                    <small className={e.balance > 0.004 ? 'owe' : e.balance < -0.004 ? 'credit' : ''}>
-                      {e.balance > 0.004 ? `חוב ${shekelSmart(e.balance)}` : e.balance < -0.004 ? `פלוס ${shekelSmart(-e.balance)}` : 'מאוזן'}
-                    </small>
-                  </span>
-                </button>
-                {e.kind === 'payment' && openPayment === e.key && (
-                  <div className="entry-more">
-                    <Link to={`/agent/${agentId}/receipt/${e.id}`} className="btn small">
-                      <Icon name="receipt" size={18} /> אישור תשלום
+              <section key={g.month} className={`card ledger rows-month${miss ? ' miss' : ''}`}>
+                <div className="rm-head">
+                  <b>{monthName(g.month, true)}</b>
+                  {st && !miss && st.state !== 'empty' && st.state !== 'no-stock' && st.state !== 'waiting' && (
+                    <Link to={`/check/${agentId}/${g.month}`} aria-label="בדיקה מול המלאי">
+                      <CheckPill state={st.state} diff={st.diff} />
                     </Link>
-                    <button type="button" className="danger-link" onClick={() => removePayment(e)}>
-                      <Icon name="trash" size={18} /> מחיקה
-                    </button>
-                  </div>
+                  )}
+                  {miss && <span className="pill gold nowrap">חסרה חשבונית</span>}
+                </div>
+                <div className="rm-sum">
+                  <span>חובה {shekelSmart(g.debit)}</span>
+                  <span>זכות {shekelSmart(g.credit)}</span>
+                  {miss ? (
+                    <span className="wait">לפי המלאי {shekelSmart(st?.m.compare ?? 0)}</span>
+                  ) : (
+                    <span className={g.debit - g.credit > 0.004 ? 'owe' : g.debit - g.credit < -0.004 ? 'plus' : 'ok'}>
+                      {Math.abs(g.debit - g.credit) < 0.005 ? 'סגור ✓' : g.debit > g.credit ? `נשאר ${shekelSmart(g.debit - g.credit)}` : `עודף ${shekelSmart(g.credit - g.debit)}`}
+                    </span>
+                  )}
+                </div>
+                {miss && (
+                  <button type="button" className="dashed-btn miss-add" onClick={() => openForm(newForm('debit', 'payment', g.month))}>
+                    <Icon name="plus" size={18} /> חובה – החשבונית של {monthName(g.month)}
+                  </button>
                 )}
-              </div>
+                {g.rows.map((e) => {
+                  const isDebit = e.amount > 0;
+                  return (
+                    <div key={e.key} className="entry-wrap">
+                      <button type="button" className="entry row-entry" onClick={() => setOpenRow((k) => (k === e.key ? null : e.key))} aria-expanded={openRow === e.key}>
+                        <span className={`side-tag ${isDebit ? 'd' : 'c'}`}>{isDebit ? 'חובה' : 'זכות'}</span>
+                        <span className="what">
+                          <b>{rowTitle(e)}</b>
+                          {e.note && <span>{e.note}</span>}
+                        </span>
+                        <span className="amt-col">
+                          <span className={`amt${isDebit ? '' : ' minus'}`}>{shekelSmart(Math.abs(e.amount))}</span>
+                          <small className={e.balance > 0.004 ? 'owe' : e.balance < -0.004 ? 'credit' : ''}>
+                            {e.balance > 0.004 ? `חוב ${shekelSmart(e.balance)}` : e.balance < -0.004 ? `פלוס ${shekelSmart(-e.balance)}` : 'מאוזן'}
+                          </small>
+                        </span>
+                      </button>
+                      {openRow === e.key && (
+                        <div className="entry-more">
+                          <button type="button" className="btn small" onClick={() => edit(e)}>
+                            <Icon name="edit" size={18} /> עריכה
+                          </button>
+                          {e.kind === 'payment' && (
+                            <Link to={`/agent/${agentId}/receipt/${e.id}`} className="btn small ghost">
+                              <Icon name="receipt" size={18} /> אישור
+                            </Link>
+                          )}
+                          <button type="button" className="danger-link" onClick={() => remove(e)}>
+                            <Icon name="trash" size={18} /> מחיקה
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
             );
           })}
-          {ledger.length > 0 && (
-            <p className="hint ledger-key">
-              + חשבוניות · בחודש שעוד אין לו חשבונית – הסחורה וההחזרות מהמלאי · − תשלומים · מתחת לכל סכום: כמה החוב אחרי. לחיצה על חשבונית – הבדיקה מול המלאי; על תשלום – אישור תשלום.
-            </p>
-          )}
-        </section>
+          {groups.length > 0 && <p className="hint rows-key">מתחת לכל סכום: כמה החוב אחרי השורה. לחיצה על שורה – עריכה או מחיקה.</p>}
+        </>
       ) : tab === 'stock' ? (
         <section className="card list" style={{ margin: '10px 16px 0', padding: '2px 14px' }}>
-          {months.length === 0 && <div className="empty" style={{ borderTop: 0 }}>עוד לא נרשמו סחורה או חשבוניות.</div>}
-          {months.map(({ m, state, diff }, i) => (
-            <Link key={m.month} to={`/check/${agentId}/${m.month}`} className="row" style={i === 0 ? { borderTop: 0 } : undefined}>
+          <p className="hint" style={{ margin: '10px 0 4px' }}>המלאי לא נכנס לחוב – הוא רק לבדיקה שהחשבונית נכונה.</p>
+          {months.length === 0 && <div className="empty">עוד לא נרשמה סחורה.</div>}
+          {months.map(({ m, state, diff }) => (
+            <Link key={m.month} to={`/check/${agentId}/${m.month}`} className="row">
               <span className="grow">
                 <b>{monthName(m.month, true)}</b>
                 <span>
@@ -392,7 +493,7 @@ export function AgentCard() {
                   {m.openReturns > 0 ? ' · מחכה להחזרות' : ''}
                 </span>
               </span>
-              <CheckPill state={state} diff={diff} />
+              <CheckPill state={state} diff={diff} waitingText="אין חשבונית" />
             </Link>
           ))}
           <Link to={`/stock/new?agent=${agentId}`} className="dashed-btn" style={{ margin: '6px 0 10px' }}>

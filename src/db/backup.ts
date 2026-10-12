@@ -134,6 +134,8 @@ export async function restoreBackup(b: Backup) {
       });
     }
   }
+  // payments from before version 7 have no month: the month of their date
+  set.push({ statement: 'UPDATE agent_payments SET month = substr(date, 1, 7) WHERE month IS NULL' });
   // the phone now holds exactly what is in the backup file, so there is nothing new to back up
   set.push({
     statement: 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',

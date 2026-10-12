@@ -33,7 +33,8 @@ export type StockEntry = {
 };
 
 export type InvoiceRec = { id: number; agentId: number; month: string; date: string; amount: number; number: string | null; note: string | null };
-export type PaymentRec = { id: number; agentId: number; date: string; amount: number; method: string | null; note: string | null };
+/** a payment to the agent: `month` is the month it is written on in the agent's card, `date` the day it was recorded */
+export type PaymentRec = { id: number; agentId: number; month: string; date: string; amount: number; method: string | null; note: string | null };
 
 export const goodsMonth = (e: StockEntry) => monthOf(e.date);
 /** the month a return credit counts in (old returns without a date count with their goods) */
@@ -57,7 +58,7 @@ export type AgentMonth = {
   invoiceCount: number;
   /** this month got an invoice of 0 ₪: its goods are billed with the next month (that month) */
   mergedInto: string | null;
-  /** what this month costs: the invoices if there are any, otherwise the stock */
+  /** what this month costs: the rows written in the agent's card for it (invoices, minus credits) */
   charge: number;
   source: 'invoice' | 'stock';
   /** deliveries that arrived this month */
@@ -140,7 +141,8 @@ export function buildMonths(stock: StockEntry[], invoices: InvoiceRec[]): AgentM
         invoiced: fromC(a.invoiced),
         invoiceCount: a.invoiceCount,
         mergedInto: a.mergedInto,
-        charge: fromC(source === 'invoice' ? a.invoiced : compare),
+        // the debt is only what was written in the agent's card (חובה − זיכוי); the stock is only for checking it
+        charge: fromC(a.invoiced),
         source,
         stockCount: a.stockCount,
         creditCount: a.creditCount,
@@ -393,101 +395,52 @@ export function invoiceHints(h: HintInput): Hint[] {
   return [...out.filter((x) => x.strong), ...out.filter((x) => !x.strong)];
 }
 
-/* ======================= money ledger (agent card, statement, payment confirmation) ======================= */
+/* ======================= the agent's card: rows by month ======================= */
 
 export type LedgerEntry = {
   key: string;
-  /** goods / returns: stock of a month that has no invoice yet (it counts until the invoice arrives) */
-  kind: 'invoice' | 'goods' | 'returns' | 'payment';
-  /** invoice / payment id, or the stock entry's id for goods and returns */
+  /** invoice = חובה; credit = זכות from the agent (a negative invoice); payment = זכות I paid */
+  kind: 'invoice' | 'credit' | 'payment';
+  /** invoice / payment id */
   id: number;
+  /** the month the row is written on */
+  month: string;
+  /** the day it was recorded */
   date: string;
-  /** + raises what I owe, − lowers it */
+  /** + raises what I owe (חובה), − lowers it (זכות) */
   amount: number;
-  /** invoices: the month of goods it bills; goods / returns: the month they count in */
-  month?: string;
-  /** what I owe the agent right after this entry, stock of un-invoiced months included (negative = he owes me) */
+  /** what I owe the agent right after this row (negative = he owes me) */
   balance: number;
-  /** the same without that stock (only what was billed) */
-  billed: number;
   number?: string | null;
   method?: string | null;
   note?: string | null;
-  /** goods: recorded as one sum / product lines; returns: credit given as a sum */
-  manual?: boolean;
-  productCount?: number;
-  /** goods still waiting for their returns */
-  pendingReturns?: boolean;
-  /** returns: the date of the goods they came back from */
-  goodsDate?: string;
 };
 
-export const isStock = (e: LedgerEntry) => e.kind === 'goods' || e.kind === 'returns';
-
-/**
- * Invoices, the stock of months that have no invoice yet (each delivery and return on its own date),
- * and payments – oldest first, with running balances.
- */
-export function buildLedger(months: AgentMonth[], stock: StockEntry[], invoices: InvoiceRec[], payments: PaymentRec[]): LedgerEntry[] {
-  // months whose stock is covered by an invoice (a 0 ₪ month counts as covered only once the next month has one)
-  const byKey = new Map(months.map((m) => [`${m.agentId}|${m.month}`, m]));
-  const covered = (m: AgentMonth): boolean => {
-    if (m.source !== 'invoice') return false;
-    if (!m.mergedInto) return true;
-    const next = byKey.get(`${m.agentId}|${m.mergedInto}`);
-    return !!next && covered(next);
-  };
-  const billedMonth = new Set(months.filter(covered).map((m) => `${m.agentId}|${m.month}`));
+/** The agent's rows, oldest first: by month, and in a month חובה before זכות; with the running balance. */
+export function buildLedger(invoices: InvoiceRec[], payments: PaymentRec[]): LedgerEntry[] {
   const out: LedgerEntry[] = [];
   for (const i of invoices) {
-    out.push({ key: `i${i.id}`, kind: 'invoice', id: i.id, date: i.date, amount: i.amount, month: i.month, balance: 0, billed: 0, number: i.number, note: i.note });
-  }
-  for (const e of stock) {
-    const gm = goodsMonth(e);
-    if (!billedMonth.has(`${e.agentId}|${gm}`)) {
-      out.push({
-        key: `g${e.id}`,
-        kind: 'goods',
-        id: e.id,
-        date: e.date,
-        amount: e.received,
-        month: gm,
-        balance: 0,
-        billed: 0,
-        note: e.note,
-        manual: e.manual,
-        productCount: e.lines,
-        pendingReturns: waitsForReturns(e),
-      });
-    }
-    const cm = creditMonth(e);
-    if (c(e.credit) !== 0 && !billedMonth.has(`${e.agentId}|${cm}`)) {
-      out.push({
-        key: `r${e.id}`,
-        kind: 'returns',
-        id: e.id,
-        date: e.returnsDate ?? e.date,
-        amount: -e.credit,
-        month: cm,
-        balance: 0,
-        billed: 0,
-        goodsDate: e.date,
-      });
-    }
+    out.push({
+      key: `i${i.id}`,
+      kind: c(i.amount) < 0 ? 'credit' : 'invoice',
+      id: i.id,
+      month: i.month,
+      date: i.date,
+      amount: i.amount,
+      balance: 0,
+      number: i.number,
+      note: i.note,
+    });
   }
   for (const p of payments) {
-    out.push({ key: `p${p.id}`, kind: 'payment', id: p.id, date: p.date, amount: -p.amount, balance: 0, billed: 0, method: p.method, note: p.note });
+    out.push({ key: `p${p.id}`, kind: 'payment', id: p.id, month: p.month, date: p.date, amount: -p.amount, balance: 0, method: p.method, note: p.note });
   }
-  // on one day: goods arrive, then returns, then the invoice, then the payment
-  const order = { goods: 0, returns: 1, invoice: 2, payment: 3 };
-  out.sort((a, b) => (a.date === b.date ? order[a.kind] - order[b.kind] || a.id - b.id : a.date < b.date ? -1 : 1));
-  let all = 0;
-  let billed = 0;
+  const order = { invoice: 0, credit: 1, payment: 2 };
+  out.sort((a, b) => (a.month === b.month ? order[a.kind] - order[b.kind] || a.date.localeCompare(b.date) || a.id - b.id : a.month < b.month ? -1 : 1));
+  let bal = 0;
   for (const e of out) {
-    all += c(e.amount);
-    if (!isStock(e)) billed += c(e.amount);
-    e.balance = fromC(all);
-    e.billed = fromC(billed);
+    bal += c(e.amount);
+    e.balance = fromC(bal);
   }
   return out;
 }

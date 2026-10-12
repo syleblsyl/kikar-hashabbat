@@ -146,7 +146,7 @@ export function InvoiceForm() {
       others.length === 0 &&
       !(await ask({
         title: 'חשבונית של 0 ₪?',
-        text: `ל${monthName(month)} לא יהיה חיוב משלו: הסוכן חייב אותו יחד עם ${monthName(addMonthKey(month, 1))}, והמלאי שלו ייבדק מול החשבונית של ${monthName(addMonthKey(month, 1))}.`,
+        text: `ל${monthName(month)} לא תהיה חובה משלו: הסוכן חייב אותו יחד עם ${monthName(addMonthKey(month, 1))}, והמלאי שלו ייבדק מול החשבונית של ${monthName(addMonthKey(month, 1))}.`,
         ok: 'כן, 0 ₪',
       }))
     )
@@ -187,7 +187,7 @@ export function InvoiceForm() {
     if (!existing || !agent) return;
     const ok = await ask({
       title: `למחוק את החשבונית של ${agent.name} על ${monthName(existing.month)}?`,
-      text: others.length > 0 ? 'החיוב לחודש יהיה לפי החשבוניות האחרות שלו.' : 'החיוב לחודש הזה יחזור להיות לפי המלאי.',
+      text: others.length > 0 ? 'החובה לחודש תהיה לפי החשבוניות האחרות שלו.' : 'החובה לסוכן על החודש הזה תרד, עד שתירשם חשבונית.',
       ok: 'מחיקה',
       danger: true,
     });

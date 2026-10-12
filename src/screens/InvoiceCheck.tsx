@@ -108,7 +108,7 @@ export function InvoiceCheck() {
         {c.state === 'waiting' && (
           <div className="update-box check-status">
             <b>עוד לא הגיעה חשבונית על {mName}</b>
-            <p>עד שתגיע, החוב והקופה מחושבים לפי המלאי: {shekelSmart(m?.expected ?? 0)}.</p>
+            <p>עד שתירשם היא לא נכנסת לחוב לסוכן. לפי המלאי: {shekelSmart(m?.expected ?? 0)}.</p>
             <Link to={`/invoices/new?agent=${c.agent.id}&month=${mk}&from=check`} className="btn small">
               <Icon name="plus" size={18} /> רישום החשבונית
             </Link>

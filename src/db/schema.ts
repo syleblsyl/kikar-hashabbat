@@ -310,4 +310,11 @@ export const MIGRATIONS: string[] = [
   DROP TABLE _v6_guard;
   DROP TABLE _v6_count;
   `,
+
+  // v7 — the agent's card is rows by month (חובה / זכות): a payment belongs to a month too.
+  `
+  ALTER TABLE agent_payments ADD COLUMN month TEXT;
+  UPDATE agent_payments SET month = substr(date, 1, 7) WHERE month IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_payments_month ON agent_payments (month);
+  `,
 ];
