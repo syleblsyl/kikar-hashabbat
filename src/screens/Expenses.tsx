@@ -26,11 +26,11 @@ import { parseAmountStrict, shekelSmart } from '../lib/money';
 
 type Tab = 'fixed' | 'workers';
 
-/** Fixed monthly expenses (repeat by themselves every month) and workers (paid when needed). */
+/** Workers and small purchases (opens here), and fixed monthly expenses (repeat by themselves every month). */
 export function Expenses() {
   const [params, setParams] = useSearchParams();
   const ym: YM = parseYM(params.get('month')) ?? thisMonth();
-  const tab: Tab = params.get('tab') === 'workers' ? 'workers' : 'fixed';
+  const tab: Tab = params.get('tab') === 'fixed' ? 'fixed' : 'workers';
   const [types, setTypes] = useState<ExpenseType[]>([]);
   const [list, setList] = useState<Expense[]>([]);
   const [editing, setEditing] = useState<Expense | null>(null);
@@ -114,7 +114,7 @@ export function Expenses() {
       const month = ymKey(ym);
       if (tab === 'workers') {
         await saveExpense({ id: editing?.id, date, type_id: null, amount: parsed, note, kind: 'workers' });
-        toast(editing ? 'עודכן' : `נרשם לפועלים: ${shekelSmart(parsed)}`);
+        toast(editing ? 'עודכן' : `נרשם בעובדים וקניות קטנות: ${shekelSmart(parsed)}`);
       } else if (editing?.recurring_id) {
         const how = await choose({
           title: 'לשנות את ההוצאה הקבועה?',
@@ -188,9 +188,9 @@ export function Expenses() {
         </span>
         <span className="what">
           <b style={canceled ? { color: 'var(--ink2)', textDecoration: 'line-through' } : undefined}>
-            {e.kind === 'workers' ? e.note || 'פועלים' : e.type ?? 'ללא סוג'}
+            {e.kind === 'workers' ? e.note || 'עובדים וקניות קטנות' : e.type ?? 'ללא סוג'}
           </b>
-          <span>{canceled ? 'בוטל לחודש הזה' : e.kind === 'workers' ? 'פועלים' : e.recurring_id ? `קבועה כל חודש${e.note ? ` · ${e.note}` : ''}` : e.note || 'חד-פעמית'}</span>
+          <span>{canceled ? 'בוטל לחודש הזה' : e.kind === 'workers' ? 'עובדים וקניות קטנות' : e.recurring_id ? `קבועה כל חודש${e.note ? ` · ${e.note}` : ''}` : e.note || 'חד-פעמית'}</span>
         </span>
         <span className="amt">{shekelSmart(e.amount)}</span>
       </button>
@@ -199,7 +199,7 @@ export function Expenses() {
 
   return (
     <>
-      <SubBar title="הוצאות" sub="קבועות כל חודש · פועלים" />
+      <SubBar title="הוצאות" sub="עובדים וקניות קטנות · קבועות כל חודש" />
       <div className="pad" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <MonthBar ym={ym} onChange={(next) => go({ ym: next })} />
         <section className="card exp-sum">
@@ -208,17 +208,17 @@ export function Expenses() {
             <b>{shekelSmart(total)}</b>
           </div>
           <div className="inv-agents">
+            <span>עובדים וקניות · {shekelSmart(sum(workers))}</span>
             <span>קבועות · {shekelSmart(sum(fixed))}</span>
-            <span>פועלים · {shekelSmart(sum(workers))}</span>
             {oneOff.length > 0 && <span>חד-פעמיות · {shekelSmart(sum(oneOff))}</span>}
           </div>
         </section>
         <div className="segment" role="tablist">
+          <button type="button" role="tab" aria-selected={tab === 'workers'} className={tab === 'workers' ? 'on' : ''} onClick={() => go({ tab: 'workers' })}>
+            עובדים וקניות קטנות
+          </button>
           <button type="button" role="tab" aria-selected={tab === 'fixed'} className={tab === 'fixed' ? 'on' : ''} onClick={() => go({ tab: 'fixed' })}>
             הוצאות קבועות
-          </button>
-          <button type="button" role="tab" aria-selected={tab === 'workers'} className={tab === 'workers' ? 'on' : ''} onClick={() => go({ tab: 'workers' })}>
-            פועלים
           </button>
         </div>
       </div>
@@ -226,7 +226,7 @@ export function Expenses() {
       <div className="form">
         <section className="card box exp-form">
           <b style={{ fontSize: 17 }}>
-            {editing ? 'עריכת הוצאה' : tab === 'workers' ? 'תשלום לפועלים' : 'הוצאה חדשה'}
+            {editing ? 'עריכת הוצאה' : tab === 'workers' ? 'עובד או קנייה קטנה' : 'הוצאה חדשה'}
           </b>
           <div className="two">
             {tab === 'workers' || !recurring || (editing && !editing.recurring_id) ? (
@@ -264,7 +264,7 @@ export function Expenses() {
           <input
             className="input"
             style={{ fontSize: 16, fontWeight: 600, height: 48 }}
-            placeholder={tab === 'workers' ? 'שם הפועל / על מה (לא חובה)' : 'הערה (לא חובה)'}
+            placeholder={tab === 'workers' ? 'שם העובד / מה קנית (לא חובה)' : 'הערה (לא חובה)'}
             aria-label="הערה"
             value={note}
             onChange={(e) => setNote(e.target.value)}
@@ -322,11 +322,11 @@ export function Expenses() {
         ) : (
           <div className="box ledger" style={{ padding: '4px 14px' }}>
             <div className="list-head">
-              <b>פועלים ב{MONTHS[ym.m]}</b>
+              <b>עובדים וקניות קטנות ב{MONTHS[ym.m]}</b>
               <span>{shekelSmart(sum(workers))}</span>
             </div>
-            {workers.length > 6 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש פועל" className="in-list" />}
-            {workers.length === 0 && <p className="hint" style={{ padding: '6px 0 12px' }}>עוד לא נרשמו תשלומים לפועלים החודש.</p>}
+            {workers.length > 6 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש עובד או קנייה" className="in-list" />}
+            {workers.length === 0 && <p className="hint" style={{ padding: '6px 0 12px' }}>עוד לא נרשמו עובדים או קניות קטנות החודש.</p>}
             {shownWorkers.map(row)}
           </div>
         )}

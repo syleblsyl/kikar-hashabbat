@@ -1,19 +1,25 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
+import { MonthBar, ymKey, type YM } from '../components/MonthBar';
 import { matches, SearchBox } from '../components/SearchBox';
 import { listAgents, type Agent } from '../db/catalog';
 import { balances } from '../db/ops';
 import { agentMonthsWithState } from '../db/billing';
-import { DAY_NAMES, thisMonthKey } from '../lib/dates';
-import { products, shekel } from '../lib/money';
+import { agentTotalsForMonth, type AgentMonthTotals } from '../db/repo';
+import { DAY_NAMES, monthName, thisMonthKey } from '../lib/dates';
+import { products, shekel, shekelSmart } from '../lib/money';
+import { STOCK } from '../lib/features';
 
 export function initialOf(name: string) {
   return name.trim().split(/\s+/).pop()?.charAt(0) ?? '?';
 }
 
-export function Agents() {
+/** The agents, by month: how much I paid each one in the month I'm on. */
+export function Agents({ ym, setYm }: { ym: YM; setYm: (ym: YM) => void }) {
+  const mk = ymKey(ym);
   const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [totals, setTotals] = useState<Map<number, AgentMonthTotals>>(new Map());
   const [hidden, setHidden] = useState<Agent[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [bal, setBal] = useState<Map<number, number>>(new Map());
@@ -26,6 +32,7 @@ export function Agents() {
   useEffect(() => {
     listAgents().then(async (list) => {
       setAgents(list);
+      if (!STOCK) return;
       const states = await Promise.all(list.map((a) => agentMonthsWithState(a.id)));
       const now = thisMonthKey();
       setMissing(new Set(list.filter((_, i) => states[i].some((x) => x.state === 'waiting' && x.m.month < now)).map((a) => a.id)));
@@ -33,6 +40,12 @@ export function Agents() {
     listAgents(true).then(setHidden);
     balances().then(setBal);
   }, []);
+
+  useEffect(() => {
+    agentTotalsForMonth(mk).then(setTotals);
+  }, [mk]);
+
+  const paidTotal = [...totals.values()].reduce((s, t) => s + t.paid, 0);
 
   return (
     <>
@@ -59,33 +72,41 @@ export function Agents() {
           <div className="agents-search">
             <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן לפי שם" className="full" />
           </div>
-          <p className="hint" style={{ margin: '0 16px 8px', fontSize: 13 }}>נכנסים לסוכן – ושם שורות של חובה וזכות לפי חודש.</p>
+          <div className="agents-month">
+            <MonthBar ym={ym} onChange={setYm} />
+          </div>
         <section className="card list">
+          <div className="head">
+            <h2>שולם ב{monthName(mk)}</h2>
+            <span>{paidTotal > 0 ? `סה״כ ${shekel(paidTotal)}` : 'עוד לא שולם'}</span>
+          </div>
           {shown.length === 0 && agents && <div className="empty">אין סוכן בשם "{q.trim()}".</div>}
-          {shown.map((a, i) => (
-            <Link key={a.id} to={`/agent/${a.id}`} className="row" style={i === 0 ? { borderTop: 0 } : undefined}>
-              <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{initialOf(a.name)}</span>
-              <span className="grow">
-                <b>{a.name}</b>
-                <span>
-                  {products(a.products ?? 0)}
-                  {a.delivery_day != null ? ` · מגיע ביום ${DAY_NAMES[a.delivery_day]}` : ''}
+          {shown.map((a) => {
+            const t = totals.get(a.id);
+            return (
+              <Link key={a.id} to={`/agent/${a.id}?month=${mk}`} className="row">
+                <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{initialOf(a.name)}</span>
+                <span className="grow">
+                  <b>{a.name}</b>
+                  <span>
+                    {t && t.debit > 0 ? `חובה ${shekelSmart(t.debit)}` : products(a.products ?? 0)}
+                    {t && t.credits > 0 ? ` · זיכוי ${shekelSmart(t.credits)}` : !t?.debit && a.delivery_day != null ? ` · מגיע ביום ${DAY_NAMES[a.delivery_day]}` : ''}
+                  </span>
+                  {missing.has(a.id) && <span className="miss-line">חסרה חשבונית</span>}
                 </span>
-              </span>
-              {Math.abs(bal.get(a.id) ?? 0) > 0.004 ? (
-                <span className="amt-col">
-                  <span className="amt nowrap" style={{ color: (bal.get(a.id) ?? 0) > 0 ? 'var(--red)' : 'var(--green)' }}>{shekel(Math.abs(bal.get(a.id) ?? 0))}</span>
-                  {missing.has(a.id) ? <small className="miss">חסרה חשבונית</small> : <small>{(bal.get(a.id) ?? 0) > 0 ? 'אני חייב' : 'פלוס שלי'}</small>}
-                </span>
-              ) : missing.has(a.id) ? (
-                <span className="amt-col">
-                  <small className="miss">חסרה חשבונית</small>
-                </span>
-              ) : (
-                <span style={{ color: 'var(--ink2)' }}><Icon name="chevron" /></span>
-              )}
-            </Link>
-          ))}
+                {t && t.paid !== 0 ? (
+                  <span className="amt-col">
+                    <span className="amt nowrap">{shekel(t.paid)}</span>
+                    <small>שולם</small>
+                  </span>
+                ) : (
+                  <span className="amt-col">
+                    <small className="not-paid">לא שולם</small>
+                  </span>
+                )}
+              </Link>
+            );
+          })}
         </section>
         </>
       )}

@@ -12,6 +12,7 @@ import { dayEvents, hebDate } from '../lib/hebrew';
 import { shekel, shekelSmart } from '../lib/money';
 import type { UpdateInfo } from '../lib/updater';
 import { initialOf } from './Agents';
+import { STOCK } from '../lib/features';
 
 type Props = {
   update: UpdateInfo | null;
@@ -43,7 +44,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
     let alive = true;
     (async () => {
       await ensureRecurring().catch(() => undefined);
-      const [s, a, p, lm, seen] = await Promise.all([monthSummary(ym.y, ym.m), agentsForMonth(ym.y, ym.m), pendingReturns(), monthAgents(prevKey), getSetting('intro_1018')]);
+      const [s, a, p, lm, seen] = await Promise.all([monthSummary(ym.y, ym.m), agentsForMonth(ym.y, ym.m), pendingReturns(), monthAgents(prevKey), getSetting('intro_1019')]);
       if (!alive) return;
       setSum(s);
       setAgents(a);
@@ -59,19 +60,26 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
   const tiles = [
     { to: '/agents', icon: 'users', label: 'סוכנים', sub: 'חשבוניות ותשלומים – חובה וזכות', bg: 'var(--blue-soft)', fg: 'var(--blue)', wide: true },
     { to: `/income?date=${incomeDate}`, icon: 'cash', label: 'הכנסות יומיות', sub: 'חנות ומקווה', bg: 'var(--green-soft)', fg: 'var(--green)' },
-    { to: `/expense?month=${ymKey(ym)}`, icon: 'sheet', label: 'הוצאות', sub: 'קבועות ופועלים', bg: 'var(--red-soft)', fg: 'var(--red)' },
-    { to: `/stock?month=${ymKey(ym)}`, icon: 'truck', label: 'מלאי', sub: 'סחורה שהגיעה', bg: 'var(--primary-soft)', fg: 'var(--primary)' },
-    { to: '/returns', icon: 'undo', label: 'החזרות', sub: 'מה שהסוכן לקח', bg: 'var(--gold-soft)', fg: 'var(--gold-ink)' },
+    { to: `/expense?month=${ymKey(ym)}`, icon: 'sheet', label: 'הוצאות', sub: 'עובדים, קניות קטנות וקבועות', bg: 'var(--red-soft)', fg: 'var(--red)' },
+    ...(STOCK
+      ? [
+          { to: `/stock?month=${ymKey(ym)}`, icon: 'truck', label: 'מלאי', sub: 'סחורה שהגיעה', bg: 'var(--primary-soft)', fg: 'var(--primary)' },
+          { to: '/returns', icon: 'undo', label: 'החזרות', sub: 'מה שהסוכן לקח', bg: 'var(--gold-soft)', fg: 'var(--gold-ink)' },
+        ]
+      : []),
+    { to: `/agents/month?month=${ymKey(ym)}`, icon: 'calendar', label: 'סוכנים לפי חודש', sub: 'כמה שילמתי לכל סוכן בחודש', bg: 'var(--gold-soft)', fg: 'var(--gold-ink)', wide: !STOCK },
   ];
-  const shown = agents.filter((a) => matches(a.name, q));
-  const owedTotal = agents.reduce((s, a) => s + Math.max(0, a.balance), 0);
+  // by the month I'm on: who I paid, and how much
+  const shown = agents.filter((a) => matches(a.name, q)).sort((a, b) => b.paid - a.paid || a.name.localeCompare(b.name, 'he'));
+  const paidTotal = agents.reduce((s, a) => s + a.paid, 0);
   // last month's invoices: still missing, or not matching the stock
-  const missing = lastMonth.filter((r) => r.state === 'waiting');
-  const bad = lastMonth.filter((r) => r.state === 'mismatch');
+  // (both come from the stock – frozen for now)
+  const missing = STOCK ? lastMonth.filter((r) => r.state === 'waiting') : [];
+  const bad = STOCK ? lastMonth.filter((r) => r.state === 'mismatch') : [];
   const retAgents = [...new Set(pending.map((p) => p.agent))];
   const mk = ymKey(ym);
   // agents are counted only by the חובה rows written for the month; a month still missing invoices is not final
-  const estimate = !!sum && sum.waiting > 0;
+  const estimate = STOCK && !!sum && sum.waiting > 0;
   const heroNote = !sum
     ? ''
     : !estimate
@@ -82,17 +90,16 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
 
   async function explain() {
     await ask({
-      title: 'חדש: חובה וזכות אצל כל סוכן',
+      title: 'מה חדש',
       text:
-        'נכנסים ל"סוכנים", מחפשים את הסוכן ונכנסים אליו.\n\n' +
-        'חובה – חשבונית: כמה אני חייב לו, ולאיזה חודש.\n\n' +
-        'זכות – תשלום שלי לסוכן, או זיכוי שהוא נתן לי.\n\n' +
-        'החוב לסוכן = חובה פחות זכות, רק לפי השורות.\n\n' +
-        'המלאי לא נכנס לחוב – הוא רק לבדיקה שהחשבונית נכונה.',
+        'סוכנים לפי חודש – בבית וברשימת הסוכנים רואים כמה שילמתי לכל סוכן בחודש שבחרתי למעלה.\n\n' +
+        'בכרטיס הסוכן – למעלה רק החודש הזה (חצים לחודש אחר). למטה כל השורות, ובסוף היתרה מכל החודשים.\n\n' +
+        'הוצאות נפתחות על "עובדים וקניות קטנות". הקבועות בלשונית השנייה.\n\n' +
+        'מלאי והחזרות מוקפאים בינתיים – לא מופיעים, אבל מה שנרשם שמור.',
       ok: 'הבנתי',
       cancel: 'סגירה',
     });
-    await setSetting('intro_1018', '1');
+    await setSetting('intro_1019', '1');
     setIntro(false);
   }
 
@@ -146,7 +153,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
             <span>הכנסות ברוטו</span>
             <b>{sum ? shekel(sum.income) : '…'}</b>
           </Link>
-          <Link to={`/invoices?month=${mk}`} className="mini" style={{ color: '#fff' }}>
+          <Link to={STOCK ? `/invoices?month=${mk}` : `/agents/month?month=${mk}`} className="mini" style={{ color: '#fff' }}>
             <span>חובה לסוכנים</span>
             <b>{sum ? shekel(sum.goodsCost) : '…'}</b>
             {estimate && <small>חסרות {sum!.waiting}</small>}
@@ -163,7 +170,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
         )}
         {sum && sum.expenses > 0 && (
           <div className="note" style={{ marginTop: -6 }}>
-            מתוך ההוצאות: קבועות {shekel(sum.fixed)} · פועלים {shekel(sum.workers)}
+            מתוך ההוצאות: עובדים וקניות קטנות {shekel(sum.workers)} · קבועות {shekel(sum.fixed)}
             {sum.expenses - sum.fixed - sum.workers > 0.5 ? ` · אחרות ${shekel(sum.expenses - sum.fixed - sum.workers)}` : ''}
           </div>
         )}
@@ -173,8 +180,8 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
         <button type="button" className="banner green" onClick={explain} style={{ width: 'calc(100% - 32px)', textAlign: 'right', font: 'inherit' }}>
           <span className="ic"><Icon name="info" /></span>
           <span className="txt">
-            <b>חדש: חובה וזכות אצל כל סוכן</b>
-            <span>הסבר קצר איך זה עובד עכשיו</span>
+            <b>מה חדש: סוכנים לפי חודש</b>
+            <span>הסבר קצר</span>
           </span>
           <span className="go">הסבר</span>
         </button>
@@ -198,7 +205,7 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
         </Link>
       )}
 
-      {pending.length > 0 && (
+      {STOCK && pending.length > 0 && (
         <Link to="/returns" className="banner gold">
           <span className="ic"><Icon name="undo" /></span>
           <span className="txt">
@@ -239,8 +246,8 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
 
       <section className="card list">
         <div className="head">
-          <h2>סוכנים</h2>
-          {owedTotal > 0 && <span>סה״כ אני חייב {shekel(owedTotal)}</span>}
+          <h2>שולם לסוכנים ב{monthName(mk)}</h2>
+          <span>{paidTotal > 0 ? shekel(paidTotal) : 'עוד לא שולם'}</span>
         </div>
         {agents.length > 6 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן" className="in-list" />}
         {agents.length === 0 ? (
@@ -253,26 +260,29 @@ export function Home({ update, ym, setYm, onLock, lockOn, backupDue }: Props) {
           <div className="empty">לא נמצא סוכן בשם הזה</div>
         ) : (
           shown.map((a) => (
-            <Link key={a.id} to={`/agent/${a.id}`} className="row">
+            <Link key={a.id} to={`/agent/${a.id}?month=${mk}`} className="row">
               <span className="avatar" style={{ background: a.color ?? 'var(--primary)' }}>{initialOf(a.name)}</span>
               <span className="grow">
                 <b>{a.name}</b>
                 <span className={a.state === 'mismatch' ? 'bad-txt' : undefined}>
-                  {a.source === 'none'
-                    ? 'אין סחורה בחודש הזה'
-                    : a.source === 'invoice'
-                      ? `חשבונית ${shekelSmart(a.invoiced)}${a.state === 'match' ? ' ✓' : a.state === 'mismatch' ? ` · הפרש ${shekelSmart(Math.abs(a.diff))}` : ''}`
-                      : `סחורה ${shekelSmart(a.charge)}${isCurrent ? '' : ' · ממתין לחשבונית'}`}
-                  {a.paid > 0 ? ` · שולם ${shekelSmart(a.paid)}` : ''}
+                  {a.invoiceCount > 0
+                    ? `חובה ${shekelSmart(a.invoiced)}${!STOCK ? '' : a.state === 'match' ? ' ✓' : a.state === 'mismatch' ? ` · הפרש ${shekelSmart(Math.abs(a.diff))}` : ''}`
+                    : STOCK && a.stockCount > 0
+                      ? `סחורה ${shekelSmart(a.expected)}${isCurrent ? '' : ' · ממתין לחשבונית'}`
+                      : STOCK
+                        ? 'אין סחורה בחודש הזה'
+                        : 'אין חשבונית על החודש'}
                 </span>
               </span>
-              {Math.abs(a.balance) > 0.004 ? (
+              {Math.abs(a.paid) > 0.004 ? (
                 <span className="amt-col">
-                  <span className="amt nowrap" style={{ color: a.balance > 0 ? 'var(--red)' : 'var(--green)' }}>{shekel(Math.abs(a.balance))}</span>
-                  <small>{a.balance > 0 ? 'אני חייב' : 'פלוס שלי'}</small>
+                  <span className="amt nowrap">{shekel(a.paid)}</span>
+                  <small>שולם</small>
                 </span>
               ) : (
-                <span className="pill gold" style={{ background: 'var(--green-soft)', color: 'var(--green)' }}>מאוזן</span>
+                <span className="amt-col">
+                  <small className="not-paid">לא שולם</small>
+                </span>
               )}
             </Link>
           ))

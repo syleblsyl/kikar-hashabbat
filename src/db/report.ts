@@ -206,7 +206,7 @@ export async function monthReport(year: number, month: number): Promise<MonthRep
         WHERE e.date BETWEEN ? AND ? AND e.amount <> 0 ORDER BY e.date`,
       [from, to],
     )
-  ).map((e) => ({ ...e, type: e.kind === 'workers' ? 'פועלים' : e.type ? `${e.type}${e.recurring_id ? ' (קבועה)' : ''}` : null }));
+  ).map((e) => ({ ...e, type: e.kind === 'workers' ? 'עובדים וקניות קטנות' : e.type ? `${e.type}${e.recurring_id ? ' (קבועה)' : ''}` : null }));
   const byTypeMap = new Map<string, number>();
   for (const e of exp) byTypeMap.set(e.type ?? 'ללא סוג', (byTypeMap.get(e.type ?? 'ללא סוג') ?? 0) + num(e.amount));
   const expenses = [...byTypeMap.values()].reduce((a, b) => a + b, 0);

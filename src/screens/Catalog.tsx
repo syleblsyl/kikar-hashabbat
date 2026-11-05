@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { STOCK } from '../lib/features';
 import { Icon } from '../components/Icon';
 import { CATEGORY_TINTS, hiddenProducts, listAgents, listCategories, listProducts, unhideProduct, type Agent, type Category, type Product } from '../db/catalog';
 import { toast } from '../components/Toast';
@@ -109,9 +110,11 @@ export function Catalog() {
                 <Link key={p.id} to={`/product/${p.id}`} className="pcard">
                   <div className="img" style={{ background: tintOf(p.category_id) }}>
                     {p.image ? <img src={p.image} alt="" /> : <span className="letter">{p.name.charAt(0)}</span>}
-                    <span className="badge" style={{ color: p.returnable ? 'var(--green)' : 'var(--ink2)' }}>
-                      {p.returnable ? 'ניתן להחזרה' : 'ללא החזרה'}
-                    </span>
+                    {STOCK && (
+                      <span className="badge" style={{ color: p.returnable ? 'var(--green)' : 'var(--ink2)' }}>
+                        {p.returnable ? 'ניתן להחזרה' : 'ללא החזרה'}
+                      </span>
+                    )}
                   </div>
                   <div className="body">
                     <b>{p.name}</b>

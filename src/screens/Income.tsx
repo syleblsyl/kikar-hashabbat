@@ -8,6 +8,7 @@ import { dayTotalsBySource, incomeMonthsByMethod, incomeSplit, listSources, type
 import { monthSummary, type MonthSummary } from '../db/repo';
 import { fromIso, iso, monthFirst, monthKey, monthLast, monthName, parseIso, partNames, sellingDay } from '../lib/dates';
 import { shekelSmart } from '../lib/money';
+import { STOCK } from '../lib/features';
 
 /** Income: choose the place (the store or the mikveh) for a selling day. */
 export function Income() {
@@ -161,12 +162,12 @@ export function Income() {
           <div>
             <span>
               פחות: חובה לסוכנים
-              {ms.waiting > 0 && <small className="muted-tag">חסרות {ms.waiting} חשבוניות</small>}
+              {STOCK && ms.waiting > 0 && <small className="muted-tag">חסרות {ms.waiting} חשבוניות</small>}
             </span>
             <b className="minus">{shekelSmart(-ms.goodsCost).replace('-', '−')}</b>
           </div>
           <div>
-            <span>פחות: הוצאות (קבועות ופועלים)</span>
+            <span>פחות: הוצאות (עובדים, קניות וקבועות)</span>
             <b className="minus">{shekelSmart(-ms.expenses).replace('-', '−')}</b>
           </div>
           <div className="total">

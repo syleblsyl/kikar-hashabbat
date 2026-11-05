@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { STOCK } from '../lib/features';
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
 import { ask } from '../components/Dialog';
 import { canLeave, useLeaveGuard } from '../components/guard';
@@ -308,6 +309,7 @@ export function ProductEdit() {
           ) : null}
         </div>
 
+        {STOCK && (
         <div className="box" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <b style={{ fontSize: 17 }}>ניתן להחזרה לסוכן</b>
@@ -324,6 +326,7 @@ export function ProductEdit() {
             <span />
           </button>
         </div>
+        )}
 
         {!isNew && history.length > 0 && (
           <div className="box">

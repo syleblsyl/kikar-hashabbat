@@ -16,6 +16,7 @@ import { initialOf } from './Agents';
 import { useBack } from '../components/useBack';
 import { myBalanceWords } from '../components/AgentDocs';
 import { waLink } from '../lib/share';
+import { STOCK } from '../lib/features';
 
 const PAY_METHODS = ['מזומן', 'העברה', 'צ׳ק', 'אשראי'];
 
@@ -35,9 +36,10 @@ type Form = {
 
 const kindOf = (f: Form): RowKind => (f.side === 'debit' ? 'invoice' : f.creditKind);
 
-function newForm(side: Side, creditKind: 'payment' | 'credit' = 'payment', forMonth?: string): Form {
-  // an invoice usually comes for last month; a payment is written on this month
-  const month = forMonth ?? (side === 'debit' ? addMonthKey(thisMonthKey(), -1) : thisMonthKey());
+/** view = the month shown at the top of the card */
+function newForm(side: Side, view: string, creditKind: 'payment' | 'credit' = 'payment', forMonth?: string): Form {
+  // a payment goes on the month I'm on; an invoice in this month is usually for last month
+  const month = forMonth ?? (side === 'debit' && view === thisMonthKey() ? addMonthKey(view, -1) : view);
   return { side, creditKind, month, amount: '', number: '', method: '', note: '' };
 }
 
@@ -48,7 +50,10 @@ const rowTitle = (e: LedgerEntry) =>
 export function AgentCard() {
   const { id } = useParams();
   const agentId = Number(id);
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
+  // the top of the card shows one month only: from the list I came from, or this month
+  const viewMonth = parseYM(params.get('month')) ? params.get('month')! : thisMonthKey();
+  const viewYM = parseYM(viewMonth)!;
   const nav = useNavigate();
   const back = useBack();
   const [agent, setAgent] = useState<Agent | null | undefined>(undefined);
@@ -58,7 +63,7 @@ export function AgentCard() {
   const [tab, setTab] = useState<'rows' | 'stock' | 'products'>('rows');
   const [months, setMonths] = useState<{ m: AgentMonth; state: CheckState; diff: number }[]>([]);
   const [pendingRet, setPendingRet] = useState<StockRow[]>([]);
-  const [form, setForm] = useState<Form | null>(() => (params.get('pay') ? newForm('credit') : params.get('row') === 'invoice' ? newForm('debit') : null));
+  const [form, setForm] = useState<Form | null>(() => (params.get('pay') ? newForm('credit', viewMonth) : params.get('row') === 'invoice' ? newForm('debit', viewMonth) : null));
   const [formDirty, setFormDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -122,7 +127,7 @@ export function AgentCard() {
   const sign = form ? (form.side === 'debit' ? 1 : -1) : 0;
   const wasAmount = form?.was ? ledger.find((e) => e.kind === form.was!.kind && e.id === form.was!.id)?.amount ?? 0 : 0;
   const after = balance - wasAmount + sign * (parsed ?? 0);
-  const stockOfMonth = form ? months.find((x) => x.m.month === form.month)?.m : undefined;
+  const stockOfMonth = STOCK && form ? months.find((x) => x.m.month === form.month)?.m : undefined;
 
   async function save() {
     if (!form || !agent) return;
@@ -139,7 +144,7 @@ export function AgentCard() {
       setFormDirty(false);
       // a new payment: the payment confirmation, to send to the agent
       if (kind === 'payment' && !form.was) {
-        nav(`/agent/${agentId}`, { replace: true });
+        nav(`/agent/${agentId}?month=${viewMonth}`, { replace: true });
         nav(`/agent/${agentId}/receipt/${res.id}?new=1`);
         return;
       }
@@ -187,11 +192,10 @@ export function AgentCard() {
 
   const color = agent.color ?? 'var(--primary)';
   const mine = myBalanceWords(balance, agent.name);
-  const lastPay = ledger.find((e) => e.kind === 'payment');
-  const pendingPast = pendingRet.filter((r) => r.date < iso(startOfWeek(today())));
+  const pendingPast = STOCK ? pendingRet.filter((r) => r.date < iso(startOfWeek(today()))) : [];
   const stateOfMonth = new Map(months.map((x) => [x.m.month, x]));
   // past months with goods and no invoice yet – the invoice is missing
-  const missing = months.filter((x) => x.state === 'waiting' && x.m.month < thisMonthKey()).map((x) => x.m.month);
+  const missing = STOCK ? months.filter((x) => x.state === 'waiting' && x.m.month < thisMonthKey()).map((x) => x.m.month) : [];
   // rows by month, newest month first (a month with a missing invoice shows even without rows)
   const groups: { month: string; rows: LedgerEntry[]; debit: number; credit: number }[] = missing.map((month) => ({ month, rows: [], debit: 0, credit: 0 }));
   for (const e of ledger) {
@@ -205,6 +209,15 @@ export function AgentCard() {
     else g.credit -= e.amount;
   }
   groups.sort((a, b) => (a.month < b.month ? 1 : -1));
+  // the month at the top
+  const inView = ledger.filter((e) => e.month === viewMonth);
+  const sumOf = (k: RowKind) => Math.round(inView.filter((e) => e.kind === k).reduce((t, e) => t + Math.abs(e.amount), 0) * 100) / 100;
+  const vPaid = sumOf('payment');
+  const vDebit = sumOf('invoice');
+  const vCredit = sumOf('credit');
+  const vPays = inView.filter((e) => e.kind === 'payment').length;
+  const vState = stateOfMonth.get(viewMonth);
+  const setView = (ym: YM) => setParams({ month: ymKey(ym) }, { replace: true });
 
   return (
     <>
@@ -250,7 +263,7 @@ export function AgentCard() {
             </span>
           </div>
         </div>
-        <div className="acts four">
+        <div className={`acts${STOCK ? ' four' : ''}`}>
           {agent.phone ? (
             <a href={`tel:${agent.phone.replace(/[^\d+]/g, '')}`}><Icon name="phone" size={18} /> חיוג</a>
           ) : (
@@ -261,26 +274,34 @@ export function AgentCard() {
           ) : (
             <span />
           )}
-          <Link to={`/stock/new?agent=${agentId}`}><Icon name="truck" size={18} /> סחורה</Link>
+          {STOCK && <Link to={`/stock/new?agent=${agentId}`}><Icon name="truck" size={18} /> סחורה</Link>}
           <Link to={`/agent/${agentId}/statement`}><Icon name="file" size={18} /> דוח</Link>
         </div>
       </section>
 
-      <section className="card balance">
-        <span className="k">{mine.label}</span>
-        <span className={`v ${mine.tone}`}>{shekelSmart(Math.abs(balance))}</span>
-        <span className="hint">חובה פחות זכות, מכל השורות</span>
-        {missing.length > 0 && (
-          <span className="hint miss-hint">
-            {missing.length > 1 ? 'חסרות חשבוניות על' : 'חסרה חשבונית על'} {missing.map((m) => monthName(m)).join(', ')} –{' '}
-            {missing.length > 1 ? 'עד שנרשמות, הן לא בחוב.' : 'עד שנרשמת, היא לא בחוב.'}
-          </span>
-        )}
-        {lastPay && (
-          <span className="hint">
-            תשלום אחרון: {shekelSmart(-lastPay.amount)} על {monthName(lastPay.month, true)}
-            {lastPay.method ? ` · ${lastPay.method}` : ''}
-          </span>
+      <section className="card balance month-head">
+        <MonthBar ym={viewYM} onChange={setView} />
+        <span className="k">שילמתי ל{agent.name} ב{monthName(viewMonth)}</span>
+        <span className={`v ${vPaid > 0 ? 'paid' : 'zero'}`}>{shekelSmart(vPaid)}</span>
+        <span className="hint">{vPays > 1 ? `${vPays} תשלומים` : vPays === 1 ? 'תשלום אחד' : 'עוד לא שולם בחודש הזה'}</span>
+        <div className="mh-grid">
+          <div>
+            <span>חובה – חשבוניות על {monthName(viewMonth)}</span>
+            <b className={vDebit > 0 ? 'owe' : ''}>{shekelSmart(vDebit)}</b>
+          </div>
+          {vCredit > 0 && (
+            <div>
+              <span>זיכוי מהסוכן</span>
+              <b className="plus">{shekelSmart(vCredit)}</b>
+            </div>
+          )}
+        </div>
+        {missing.includes(viewMonth) ? (
+          <span className="hint miss-hint">חסרה חשבונית על {monthName(viewMonth)} – לפי המלאי {shekelSmart(vState?.m.compare ?? 0)}</span>
+        ) : (
+          STOCK && vDebit === 0 && viewMonth === thisMonthKey() && (vState?.m.stockCount ?? 0) > 0 && (
+            <span className="hint">החשבונית על {monthName(viewMonth)} תגיע ב{monthName(addMonthKey(viewMonth, 1))}</span>
+          )
         )}
         {pendingPast.map((p) => (
           <Link key={p.id} to={`/returns?invoice=${p.id}`} className="banner gold slim">
@@ -293,10 +314,10 @@ export function AgentCard() {
           </Link>
         ))}
         <div className="two side-btns" style={{ marginTop: 8 }}>
-          <button type="button" className="btn small debit" onClick={() => openForm(newForm('debit'))}>
+          <button type="button" className="btn small debit" onClick={() => openForm(newForm('debit', viewMonth))}>
             <Icon name="plus" size={20} /> חובה
           </button>
-          <button type="button" className="btn small credit" onClick={() => openForm(newForm('credit'))}>
+          <button type="button" className="btn small credit" onClick={() => openForm(newForm('credit', viewMonth))}>
             <Icon name="plus" size={20} /> זכות
           </button>
         </div>
@@ -397,7 +418,9 @@ export function AgentCard() {
       <div className="stack" style={{ margin: '12px 16px 0' }}>
         <div className="segment" role="tablist">
           <button type="button" role="tab" aria-selected={tab === 'rows'} className={tab === 'rows' ? 'on' : ''} onClick={() => setTab('rows')}>חובה וזכות</button>
-          <button type="button" role="tab" aria-selected={tab === 'stock'} className={tab === 'stock' ? 'on' : ''} onClick={() => setTab('stock')}>מלאי</button>
+          {STOCK && (
+            <button type="button" role="tab" aria-selected={tab === 'stock'} className={tab === 'stock' ? 'on' : ''} onClick={() => setTab('stock')}>מלאי</button>
+          )}
           <button type="button" role="tab" aria-selected={tab === 'products'} className={tab === 'products' ? 'on' : ''} onClick={() => setTab('products')}>מוצרים ({prods.length})</button>
         </div>
       </div>
@@ -413,10 +436,10 @@ export function AgentCard() {
             const st = stateOfMonth.get(g.month);
             const miss = missing.includes(g.month);
             return (
-              <section key={g.month} className={`card ledger rows-month${miss ? ' miss' : ''}`}>
+              <section key={g.month} className={`card ledger rows-month${miss ? ' miss' : ''}${g.month === viewMonth ? ' cur' : ''}`}>
                 <div className="rm-head">
                   <b>{monthName(g.month, true)}</b>
-                  {st && !miss && st.state !== 'empty' && st.state !== 'no-stock' && st.state !== 'waiting' && (
+                  {STOCK && st && !miss && st.state !== 'empty' && st.state !== 'no-stock' && st.state !== 'waiting' && (
                     <Link to={`/check/${agentId}/${g.month}`} aria-label="בדיקה מול המלאי">
                       <CheckPill state={st.state} diff={st.diff} />
                     </Link>
@@ -428,14 +451,14 @@ export function AgentCard() {
                   <span>זכות {shekelSmart(g.credit)}</span>
                   {miss ? (
                     <span className="wait">לפי המלאי {shekelSmart(st?.m.compare ?? 0)}</span>
-                  ) : (
+                  ) : !STOCK ? null : (
                     <span className={g.debit - g.credit > 0.004 ? 'owe' : g.debit - g.credit < -0.004 ? 'plus' : 'ok'}>
                       {Math.abs(g.debit - g.credit) < 0.005 ? 'סגור ✓' : g.debit > g.credit ? `נשאר ${shekelSmart(g.debit - g.credit)}` : `עודף ${shekelSmart(g.credit - g.debit)}`}
                     </span>
                   )}
                 </div>
                 {miss && (
-                  <button type="button" className="dashed-btn miss-add" onClick={() => openForm(newForm('debit', 'payment', g.month))}>
+                  <button type="button" className="dashed-btn miss-add" onClick={() => openForm(newForm('debit', viewMonth, 'payment', g.month))}>
                     <Icon name="plus" size={18} /> חובה – החשבונית של {monthName(g.month)}
                   </button>
                 )}
@@ -477,6 +500,20 @@ export function AgentCard() {
               </section>
             );
           })}
+          {groups.length > 0 && (
+            <section className="card all-bal">
+              <span>כל החשבון, מכל החודשים</span>
+              <b className={mine.tone}>
+                {mine.label}
+                {mine.tone !== 'zero' && ` ${shekelSmart(Math.abs(balance))}`}
+              </b>
+              {missing.length > 0 && (
+                <small className="miss-hint">
+                  {missing.length > 1 ? 'חסרות חשבוניות על' : 'חסרה חשבונית על'} {missing.map((m) => monthName(m)).join(', ')} – {missing.length > 1 ? 'הן עוד לא בחוב' : 'היא עוד לא בחוב'}
+                </small>
+              )}
+            </section>
+          )}
           {groups.length > 0 && <p className="hint rows-key">מתחת לכל סכום: כמה החוב אחרי השורה. לחיצה על שורה – עריכה או מחיקה.</p>}
         </>
       ) : tab === 'stock' ? (

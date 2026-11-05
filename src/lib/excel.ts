@@ -1,6 +1,7 @@
 import type { MonthReport } from '../db/report';
 import { DAY_NAMES, fromIso, MONTHS } from './dates';
 import { hebDate, weekInfo } from './hebrew';
+import { STOCK } from './features';
 
 const MONEY = '#,##0.00 "₪"';
 const HEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7A2A1C' } } as const;
@@ -57,15 +58,18 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     [
       { k: 'הכנסות ברוטו', v: r.income },
       ...r.bySource.flatMap((s) => [{ k: `   ${s.name}`, v: s.total }, ...s.methods.map((m) => ({ k: `      ${m.name}`, v: m.total }))]),
-      { k: 'מלאי: סחורה שהגיעה', v: r.received },
-      { k: 'מלאי: החזרות החודש', v: -r.credit },
-      { k: 'לפי המלאי', v: r.expected },
-      { k: 'חשבוניות הסוכנים על החודש', v: r.invoiced },
-      { k: 'חיובי סוכנים (חשבונית, ואם אין – מלאי)', v: r.charges },
+      ...(STOCK
+        ? [
+            { k: 'מלאי: סחורה שהגיעה', v: r.received },
+            { k: 'מלאי: החזרות החודש', v: -r.credit },
+            { k: 'לפי המלאי', v: r.expected },
+          ]
+        : []),
+      { k: 'חובה לסוכנים (החשבוניות על החודש)', v: r.charges },
       { k: 'שולם לסוכנים החודש', v: r.paid },
-      { k: 'הוצאות (קבועות ופועלים)', v: r.expenses },
+      { k: 'הוצאות (קבועות, עובדים וקניות קטנות)', v: r.expenses },
       ...r.byType.map((t) => ({ k: `   ${t.name}`, v: t.total })),
-      { k: 'נשאר בקופה (הכנסות − חיובי סוכנים − הוצאות)', v: r.net },
+      { k: 'נשאר בקופה (הכנסות − חובה לסוכנים − הוצאות)', v: r.net },
     ],
   );
   sum.eachRow((row, n) => {
@@ -74,14 +78,15 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
   sum.addRow({});
   const wh = sum.addRow({ k: 'לפי שבועות' });
   wh.font = { bold: true, size: 13 };
-  const hdr = sum.addRow(['שבוע', 'הכנסות', 'מלאי', 'הוצאות', 'נשאר בקופה']);
+  const hdr = sum.addRow(STOCK ? ['שבוע', 'הכנסות', 'מלאי', 'הוצאות', 'נשאר בקופה'] : ['שבוע', 'הכנסות', 'הוצאות']);
   hdr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   hdr.eachCell((c) => (c.fill = HEAD_FILL));
   for (const w of r.weeks) {
-    const row = sum.addRow([`${w.title} (${dmy(w.from)}–${dmy(w.to)})`, w.income, w.goods, w.expenses, w.net]);
-    [2, 3, 4, 5].forEach((i) => (row.getCell(i).numFmt = MONEY));
+    const when = `${w.title} (${dmy(w.from)}–${dmy(w.to)})`;
+    const row = sum.addRow(STOCK ? [when, w.income, w.goods, w.expenses, w.net] : [when, w.income, w.expenses]);
+    (STOCK ? [2, 3, 4, 5] : [2, 3]).forEach((i) => (row.getCell(i).numFmt = MONEY));
   }
-  if (Math.abs(r.correction) >= 1) {
+  if (STOCK && Math.abs(r.correction) >= 1) {
     const row = sum.addRow(['תיקון לפי החשבוניות (מול המלאי)', '', '', '', -r.correction]);
     row.getCell(5).numFmt = MONEY;
   }
@@ -107,8 +112,8 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     { date: 'סה״כ', ...Object.fromEntries(r.byMethod.map((m, i) => [`m${i}`, m.total])), total: r.income },
   );
 
-  // 3. stock: goods
-  sheet(
+  // 3. stock: goods (frozen for now)
+  if (STOCK) sheet(
     'מלאי – סחורה',
     [
       { header: 'תאריך', key: 'date', width: 12 },
@@ -138,7 +143,7 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
   );
 
   // 3b. stock: returns recorded this month
-  sheet(
+  if (STOCK) sheet(
     'מלאי – החזרות',
     [
       { header: 'תאריך ההחזרה', key: 'date', width: 13 },
@@ -160,13 +165,24 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
       { header: 'סוכן', key: 'agent', width: 20 },
       { header: 'מספר', key: 'number', width: 12 },
       { header: 'סכום', key: 'amount', width: 14, money: true },
-      { header: 'בדיקה מול המלאי', key: 'state', width: 16 },
+      ...(STOCK ? [{ header: 'בדיקה מול המלאי', key: 'state', width: 16 }] : []),
       { header: 'הערה', key: 'note', width: 22 },
     ],
     r.invoiceRows.map((i) => ({ date: dmy(i.date), agent: i.agent, number: i.number, amount: i.amount, state: STATE[i.state] ?? '', note: i.note })),
     { date: 'סה״כ', amount: r.invoiced },
   );
-  sheet(
+  if (!STOCK)
+    sheet(
+      'לפי סוכן',
+      [
+        { header: 'סוכן', key: 'name', width: 22 },
+        { header: 'חובה – חשבוניות על החודש', key: 'charge', width: 18, money: true },
+        { header: 'שולם על החודש', key: 'paid', width: 16, money: true },
+      ],
+      r.agents.map((a) => ({ name: a.name, charge: a.charge, paid: a.paid })),
+      { name: 'סה״כ', charge: r.charges, paid: r.paid },
+    );
+  else sheet(
     'לפי סוכן',
     [
       { header: 'סוכן', key: 'name', width: 22 },
@@ -193,8 +209,8 @@ export async function buildMonthWorkbook(r: MonthReport): Promise<Blob> {
     { name: 'סה״כ', received: r.received, returned: r.credit, expected: r.expected, invoiced: r.invoiced, charge: r.charges, paid: r.paid },
   );
 
-  // 5. products
-  sheet(
+  // 5. products (from the stock)
+  if (STOCK) sheet(
     'לפי מוצר',
     [
       { header: 'מוצר', key: 'name', width: 24 },

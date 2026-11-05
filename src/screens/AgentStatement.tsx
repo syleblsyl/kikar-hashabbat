@@ -7,6 +7,7 @@ import { SubBar } from '../components/SubBar';
 import { getAgent, type Agent } from '../db/catalog';
 import { agentStatement, type Statement, type StatementRange } from '../db/billing';
 import { iso, today } from '../lib/dates';
+import { STOCK } from '../lib/features';
 
 const RANGES: { k: StatementRange; label: string }[] = [
   { k: 'since-payment', label: 'מאז התשלום האחרון' },
@@ -63,9 +64,11 @@ export function AgentStatement() {
             </button>
           ))}
         </div>
-        <button type="button" className={`chip${details ? ' on' : ''}`} aria-pressed={details} onClick={() => setDetails((d) => !d)}>
-          השוואה למלאי
-        </button>
+        {STOCK && (
+          <button type="button" className={`chip${details ? ' on' : ''}`} aria-pressed={details} onClick={() => setDetails((d) => !d)}>
+            השוואה למלאי
+          </button>
+        )}
       </div>
 
       {!st ? (

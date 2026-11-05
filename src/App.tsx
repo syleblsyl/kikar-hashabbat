@@ -22,6 +22,7 @@ import { Settings } from './screens/Settings';
 import { Soon } from './screens/Soon';
 import { Catalog } from './screens/Catalog';
 import { ProductEdit } from './screens/ProductEdit';
+import { AgentsMonth } from './screens/AgentsMonth';
 import { Agents } from './screens/Agents';
 import { AgentEdit } from './screens/AgentEdit';
 import { Categories } from './screens/Categories';
@@ -115,7 +116,8 @@ function Shell({ gate, lockOn, onLock, onChangePin, onLockSetting }: ShellProps)
             <Route path="/settings" element={<Settings update={update} setUpdate={setUpdate} lockOn={lockOn} onLockSetting={onLockSetting} onChangePin={onChangePin} onLock={onLock} />} />
             <Route path="/catalog" element={<Catalog />} />
             <Route path="/product/:id" element={<ProductEdit />} />
-            <Route path="/agents" element={<Agents />} />
+            <Route path="/agents" element={<Agents ym={ym} setYm={setYm} />} />
+            <Route path="/agents/month" element={<AgentsMonth />} />
             <Route path="/agent/new" element={<AgentEdit />} />
             <Route path="/agent/:id" element={<AgentCard />} />
             <Route path="/agent/:id/edit" element={<AgentEdit />} />

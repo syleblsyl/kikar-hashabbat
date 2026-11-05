@@ -145,3 +145,25 @@ export async function agentsForMonth(year: number, month: number): Promise<Agent
     })
     .sort((a, b) => b.balance - a.balance || a.name.localeCompare(b.name, 'he'));
 }
+
+export type AgentMonthTotals = { paid: number; debit: number; credits: number };
+
+/** Per agent, one month: what I paid (by the month the payment is written on), the invoices (חובה) and the credits from him. */
+export async function agentTotalsForMonth(mk: string): Promise<Map<number, AgentMonthTotals>> {
+  const [pays, invs] = await Promise.all([
+    query<{ agent_id: number; total: number }>('SELECT agent_id, SUM(amount) AS total FROM agent_payments WHERE COALESCE(month, substr(date, 1, 7)) = ? GROUP BY agent_id', [mk]),
+    query<{ agent_id: number; debit: number; credits: number }>(
+      'SELECT agent_id, SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS debit, SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END) AS credits FROM agent_invoices WHERE month = ? GROUP BY agent_id',
+      [mk],
+    ),
+  ]);
+  const out = new Map<number, AgentMonthTotals>();
+  const get = (id: number) => out.get(id) ?? out.set(id, { paid: 0, debit: 0, credits: 0 }).get(id)!;
+  for (const p of pays) get(Number(p.agent_id)).paid = Math.round(Number(p.total) * 100) / 100;
+  for (const i of invs) {
+    const t = get(Number(i.agent_id));
+    t.debit = Math.round(Number(i.debit) * 100) / 100;
+    t.credits = Math.round(Number(i.credits) * 100) / 100;
+  }
+  return out;
+}

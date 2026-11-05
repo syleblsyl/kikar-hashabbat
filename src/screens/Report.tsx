@@ -11,6 +11,7 @@ import { fromIso, monthKey, MONTHS, today } from '../lib/dates';
 import { hebDate } from '../lib/hebrew';
 import { qty, shekel } from '../lib/money';
 import { shareFile, ShareCancelled } from '../lib/share';
+import { STOCK } from '../lib/features';
 
 const dm = (s: string) => `${fromIso(s).getDate()}.${fromIso(s).getMonth() + 1}`;
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
@@ -52,7 +53,7 @@ export function Report() {
 
   /** Before sending: if invoices or returns are still missing, the numbers will change – say so. */
   async function okToExport(): Promise<boolean> {
-    if (!r || (r.waiting === 0 && r.openReturns === 0)) return true;
+    if (!r || !STOCK || (r.waiting === 0 && r.openReturns === 0)) return true;
     const parts = [
       r.waiting > 0 ? `${r.waiting === 1 ? 'חשבונית אחת' : `${r.waiting} חשבוניות`} על ${MONTHS[r.month]} עוד לא נרשמו – הן עוד לא בחובה לסוכנים.` : '',
       r.openReturns > 0 ? `ב-${r.openReturns === 1 ? 'סחורה אחת' : `${r.openReturns} קבלות סחורה`} ההחזרות עוד לא נרשמו.` : '',
@@ -101,7 +102,7 @@ export function Report() {
     setBusy('');
   }
 
-  const maxWeek = r ? Math.max(1, ...r.weeks.map((w) => Math.abs(w.net))) : 1;
+  const maxWeek = r ? Math.max(1, ...r.weeks.map((w) => Math.abs(STOCK ? w.net : w.income))) : 1;
   const maxMethod = r ? Math.max(1, ...r.bySource.flatMap((s) => s.methods.map((m) => m.total))) : 1;
   // cash, credit… of the whole month (both places together)
   const allMethods: MethodTotal[] = [];
@@ -152,9 +153,9 @@ export function Report() {
               <div className="k">נשאר בקופה · {MONTHS[ym.m]}</div>
               <div className="big">{shekel(r.net)}</div>
               <div className="note">
-                {r.waiting > 0
+                {STOCK && r.waiting > 0
                   ? `עוד לא סופי · ${r.waiting === 1 ? 'חסרה חשבונית אחת' : `חסרות ${r.waiting} חשבוניות`} – נכנס רק מה שנרשם`
-                  : r.openReturns > 0
+                  : STOCK && r.openReturns > 0
                     ? 'לפני חלק מההחזרות · יתעדכן אחרי שירשמו'
                     : 'הכנסות ברוטו פחות החובה לסוכנים והוצאות · לא משנה אם שולם'}
               </div>
@@ -168,12 +169,12 @@ export function Report() {
 
           <section className="card rsec">
             <div className="kpis">
-              <div><span>מלאי (סחורה פחות החזרות)</span><b>{shekel(r.expected)}</b></div>
+              {STOCK && <div><span>מלאי (סחורה פחות החזרות)</span><b>{shekel(r.expected)}</b></div>}
               <div><span>חשבוניות</span><b>{shekel(r.invoiced)}</b></div>
               <div><span>שולם לסוכנים</span><b>{shekel(r.paid)}</b></div>
               <div><span>ימים עם הכנסה</span><b>{r.daily.filter((d) => d.total > 0).length}</b></div>
             </div>
-            {(r.waiting > 0 || r.mismatches > 0) && (
+            {STOCK && (r.waiting > 0 || r.mismatches > 0) && (
               <Link to={`/invoices?month=${mk}`} className={`banner slim ${r.mismatches ? 'red' : 'gold'}`} style={{ margin: 0 }}>
                 <span className="ic"><Icon name="receipt" size={18} /></span>
                 <span className="txt">
@@ -187,7 +188,7 @@ export function Report() {
                 <span className="go">{r.mismatches ? 'לבדיקה' : 'לרישום'}</span>
               </Link>
             )}
-            {r.openReturns > 0 && (
+            {STOCK && r.openReturns > 0 && (
               <Link to="/returns" className="banner gold slim" style={{ margin: 0 }}>
                 <span className="ic"><Icon name="undo" size={18} /></span>
                 <span className="txt">
@@ -200,26 +201,29 @@ export function Report() {
           </section>
 
           <section className="card rsec">
-            <h2>נשאר בקופה לפי שבוע</h2>
+            <h2>{STOCK ? 'נשאר בקופה לפי שבוע' : 'הכנסות לפי שבוע'}</h2>
             <div className="bars">
-              {r.weeks.map((w) => (
-                <div key={w.weekStart} className="bar-row wk">
-                  <span className="d">
-                    <b>{w.title.replace('פרשת ', '')}</b>
-                    <small>{dm(w.from)}–{dm(w.to)}</small>
-                  </span>
-                  <HBar value={w.net} max={maxWeek} />
-                  <span className="v" style={{ color: w.net < 0 ? 'var(--red)' : undefined }}>{shekel(w.net)}</span>
-                </div>
-              ))}
+              {r.weeks.map((w) => {
+                const v = STOCK ? w.net : w.income;
+                return (
+                  <div key={w.weekStart} className="bar-row wk">
+                    <span className="d">
+                      <b>{w.title.replace('פרשת ', '')}</b>
+                      <small>{dm(w.from)}–{dm(w.to)}</small>
+                    </span>
+                    <HBar value={v} max={maxWeek} color={STOCK ? undefined : 'var(--green)'} />
+                    <span className="v" style={{ color: v < 0 ? 'var(--red)' : undefined }}>{shekel(v)}</span>
+                  </div>
+                );
+              })}
             </div>
-            {Math.abs(r.correction) >= 1 && (
+            {STOCK && Math.abs(r.correction) >= 1 && (
               <div className="kv" style={{ marginTop: 6 }}>
                 <span>תיקון לפי החשבוניות (מול המלאי)</span>
                 <b style={{ color: r.correction > 0 ? 'var(--red)' : 'var(--green)' }}>{shekel(-r.correction)}</b>
               </div>
             )}
-            <p className="hint" style={{ margin: '6px 0 0' }}>לפי שבוע – לפי המלאי (סחורה והחזרות של אותו שבוע)</p>
+            <p className="hint" style={{ margin: '6px 0 0' }}>{STOCK ? 'לפי שבוע – לפי המלאי (סחורה והחזרות של אותו שבוע)' : 'הכנסות ברוטו של כל שבוע (חנות ומקווה)'}</p>
           </section>
 
           {r.bySource.length > 0 && (
@@ -254,7 +258,30 @@ export function Report() {
             </section>
           )}
 
-          {r.agents.length > 0 && (
+          {!STOCK && r.agents.length > 0 && (
+            <section className="card rsec">
+              <div className="h2-row"><h2>לפי סוכן</h2><small>בש״ח</small></div>
+              {r.agents.length > 6 && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן" />}
+              <div className="tbl am">
+                <div className="tr th"><span>סוכן</span><span>חובה</span><span>שולם</span></div>
+                {r.agents.filter((a) => matches(a.name, q)).map((a) => (
+                  <Link key={a.id} to={`/agent/${a.id}?month=${mk}`} className="tr">
+                    <span className="nm"><i style={{ background: a.color ?? 'var(--primary)' }} />{a.name}</span>
+                    <span>{Math.round(a.charge).toLocaleString('en-US')}</span>
+                    <span><b>{Math.round(a.paid).toLocaleString('en-US')}</b></span>
+                  </Link>
+                ))}
+                <div className="tr tt">
+                  <span>סה״כ</span>
+                  <span>{Math.round(r.charges).toLocaleString('en-US')}</span>
+                  <span>{Math.round(r.paid).toLocaleString('en-US')}</span>
+                </div>
+              </div>
+              <p className="hint" style={{ margin: '6px 0 0' }}>חובה = החשבוניות על החודש · שולם = התשלומים על החודש</p>
+            </section>
+          )}
+
+          {STOCK && r.agents.length > 0 && (
             <section className="card rsec">
               <div className="h2-row"><h2>לפי סוכן</h2><small>בש״ח</small></div>
               {(r.agents.length > 6 || r.products.length > 10) && <SearchBox value={q} onChange={setQ} placeholder="חיפוש סוכן או מוצר" />}
@@ -285,7 +312,7 @@ export function Report() {
             </section>
           )}
 
-          {r.products.length > 0 && (
+          {STOCK && r.products.length > 0 && (
             <section className="card rsec">
               <div className="h2-row"><h2>{q ? 'מוצרים' : 'המוצרים הנמכרים ביותר'}</h2><small>עלות בש״ח</small></div>
               <div className="tbl p3">
@@ -345,26 +372,30 @@ function PrintReport({ r }: { r: MonthReport }) {
         <div>
           <h1>דוח חודשי – {MONTHS[r.month]} {r.year}</h1>
           <p>{r.hebMonths} · הופק {today().toLocaleDateString('he-IL')} ({hebDate(today())})</p>
-          {r.waiting > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: {r.waiting} חשבוניות על החודש עוד לא נרשמו – הן עוד לא בחובה לסוכנים, והסכום עוד ישתנה.</p>}
-          {r.openReturns > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: ב-{r.openReturns} קבלות סחורה ההחזרות עוד לא נרשמו, הסכום עוד ישתנה.</p>}
+          {STOCK && r.waiting > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: {r.waiting} חשבוניות על החודש עוד לא נרשמו – הן עוד לא בחובה לסוכנים, והסכום עוד ישתנה.</p>}
+          {STOCK && r.openReturns > 0 && <p style={{ color: '#8a5a12', fontWeight: 700 }}>שים לב: ב-{r.openReturns} קבלות סחורה ההחזרות עוד לא נרשמו, הסכום עוד ישתנה.</p>}
         </div>
       </div>
       <table className="p-kpi">
         <tbody>
-          <tr><td>הכנסות ברוטו</td><td>{money(r.income)}</td><td>מלאי (סחורה פחות החזרות)</td><td>{money(r.expected)}</td></tr>
-          <tr><td>חובה לסוכנים</td><td>{money(r.charges)}</td><td>חשבוניות</td><td>{money(r.invoiced)}</td></tr>
-          <tr><td>הוצאות (קבועות ופועלים)</td><td>{money(r.expenses)}</td><td>שולם לסוכנים</td><td>{money(r.paid)}</td></tr>
+          <tr><td>הכנסות ברוטו</td><td>{money(r.income)}</td>{STOCK ? <><td>מלאי (סחורה פחות החזרות)</td><td>{money(r.expected)}</td></> : <><td>חשבוניות</td><td>{money(r.invoiced)}</td></>}</tr>
+          <tr><td>חובה לסוכנים</td><td>{money(r.charges)}</td>{STOCK ? <><td>חשבוניות</td><td>{money(r.invoiced)}</td></> : <><td /><td /></>}</tr>
+          <tr><td>הוצאות (קבועות, עובדים וקניות)</td><td>{money(r.expenses)}</td><td>שולם לסוכנים</td><td>{money(r.paid)}</td></tr>
           <tr className="net"><td>נשאר בקופה</td><td colSpan={3}>{money(r.net)} <small style={{ fontWeight: 400, fontSize: 12, color: '#6b5847' }}>(הכנסות − חובה לסוכנים − הוצאות · חובה = החשבוניות שנרשמו)</small></td></tr>
         </tbody>
       </table>
       <h2>לפי שבועות</h2>
       <table>
-        <thead><tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>מלאי</th><th>הוצאות</th><th>נשאר בקופה</th></tr></thead>
+        <thead>{STOCK ? <tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>מלאי</th><th>הוצאות</th><th>נשאר בקופה</th></tr> : <tr><th>שבוע</th><th>תאריכים</th><th>הכנסות</th><th>הוצאות</th></tr>}</thead>
         <tbody>
-          {r.weeks.map((w) => (
-            <tr key={w.weekStart}><td>{w.title}</td><td>{dm(w.from)}–{dm(w.to)}</td><td>{money(w.income)}</td><td>{money(w.goods)}</td><td>{money(w.expenses)}</td><td><b>{money(w.net)}</b></td></tr>
-          ))}
-          {Math.abs(r.correction) >= 1 && (
+          {r.weeks.map((w) =>
+            STOCK ? (
+              <tr key={w.weekStart}><td>{w.title}</td><td>{dm(w.from)}–{dm(w.to)}</td><td>{money(w.income)}</td><td>{money(w.goods)}</td><td>{money(w.expenses)}</td><td><b>{money(w.net)}</b></td></tr>
+            ) : (
+              <tr key={w.weekStart}><td>{w.title}</td><td>{dm(w.from)}–{dm(w.to)}</td><td><b>{money(w.income)}</b></td><td>{money(w.expenses)}</td></tr>
+            ),
+          )}
+          {STOCK && Math.abs(r.correction) >= 1 && (
             <tr><td colSpan={5}>תיקון לפי החשבוניות (מול המלאי)</td><td><b>{money(-r.correction)}</b></td></tr>
           )}
         </tbody>
@@ -390,6 +421,18 @@ function PrintReport({ r }: { r: MonthReport }) {
         <>
           <h2>לפי סוכן</h2>
           <table>
+            {!STOCK ? (
+              <>
+                <thead><tr><th>סוכן</th><th>חובה (חשבוניות על החודש)</th><th>שולם על החודש</th></tr></thead>
+                <tbody>
+                  {r.agents.map((a) => (
+                    <tr key={a.id}><td>{a.name}</td><td>{money(a.charge)}</td><td>{money(a.paid)}</td></tr>
+                  ))}
+                  <tr className="p-total"><td>סה״כ</td><td>{money(r.charges)}</td><td>{money(r.paid)}</td></tr>
+                </tbody>
+              </>
+            ) : (
+            <>
             <thead><tr><th>סוכן</th><th>סחורה</th><th>החזרות</th><th>לפי המלאי</th><th>חשבונית</th><th>חובה</th><th>שולם על החודש</th></tr></thead>
             <tbody>
               {r.agents.map((a) => (
@@ -401,10 +444,12 @@ function PrintReport({ r }: { r: MonthReport }) {
               ))}
               <tr className="p-total"><td>סה״כ</td><td>{money(r.received)}</td><td>{money(r.credit)}</td><td>{money(r.expected)}</td><td>{money(r.invoiced)}</td><td>{money(r.charges)}</td><td>{money(r.paid)}</td></tr>
             </tbody>
+            </>
+            )}
           </table>
         </>
       )}
-      {r.products.length > 0 && (
+      {STOCK && r.products.length > 0 && (
         <>
           <h2>לפי מוצר</h2>
           <table>
